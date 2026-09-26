@@ -14,7 +14,7 @@ Run: https://github.com/brandonewade-debug/AsterOS/actions/runs/36259461034
 
 ## Local Mac validation, 2026-09-26
 
-The initial foundation compiled with Xcode 26.6 (17F113) on the development Mac. Four XCTest checks passed on the iPhone 17 Pro simulator running iOS 26.5. Companion UI additions are being validated separately. Seventeen companion tests passed in the Python environment. No physical iPhone or TestFlight upload has occurred.
+The initial foundation compiled with Xcode 26.6 (17F113) on the development Mac. Four XCTest checks passed on the iPhone 17 Pro simulator running iOS 26.5. The companion Files integration also compiled and passed those four XCTest checks. Seventeen companion tests passed in the Python environment. No physical iPhone or TestFlight upload has occurred.
 
 ## Before internal TestFlight
 
@@ -30,3 +30,9 @@ The initial foundation compiled with Xcode 26.6 (17F113) on the development Mac.
 ## Before paid release
 
 Complete the core features, capability negotiation, onboarding, security review and version/device matrix. Validate backup restoration and interrupted-transfer recovery before marketing backup reliability. Confirm name availability and any Unraid branding/integration requirements. No commercial-readiness claim should be based solely on this starter.
+
+## Installed companion validation
+
+The companion image built on Unraid 7.2.2 and Docker 27.5.1. The container reports healthy, runs as 99:100 with a read-only root, and restarts unless stopped. Its live HTTP smoke test passed device pairing, folder creation, a two-chunk upload with resume offset verification, SHA-256 completion and exact-content download. The temporary test device was revoked afterwards.
+
+The deployment uses a dedicated AsterOS storage folder, 10 GiB free-space reserve, 1 GiB per-file test limit, localhost-only port 8790 and Tailscale Serve HTTPS on port 8791. No router forwarding or public domain route was added. TLS health verification succeeded with explicit address resolution; normal DNS lookup from the server did not resolve its tailnet hostname. End-to-end phone pairing over Tailscale remains to be validated.

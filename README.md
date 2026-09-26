@@ -9,7 +9,7 @@ A native iPhone and iPad companion for Unraid, by Asterline Labs. Development fo
 3. Choose **Explore demo**, or supply your server's HTTPS address and Unraid API key.
 4. For a physical device, set your signing team and a unique bundle identifier in the app target. The current identifier `com.asterlinelabs.asteros` is provisional; it is not registered by this project.
 
-Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. Companion UI additions require a new build. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
+Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. The companion Files integration also compiled successfully and passed the same four checks. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
 
 ## Implemented source
 
