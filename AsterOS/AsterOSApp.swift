@@ -152,7 +152,7 @@ struct ConnectionView: View {
                 }
                 Section {
                     Toggle("Manage Docker apps", isOn: $allowDockerManagement)
-                    Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Install/remove controls are still in development." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
+                    Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Allows native container removal; new apps are installed through the server App Store." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
                     Button {
                         do {
                             error = nil
@@ -316,7 +316,7 @@ struct SettingsView: View {
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
                     Text("0.1.0 • Preview")
-                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Notifications, Face ID lock, app installation and terminal access are still planned.").foregroundStyle(.secondary)
+                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes an integrated server App Store and container removal. Notifications, Face ID lock and terminal access are still planned.").foregroundStyle(.secondary)
                 }
                 Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. App browser cookies are kept only for the current browser session.") }
                 if let error { Text(error).foregroundStyle(.orange) }

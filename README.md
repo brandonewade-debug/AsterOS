@@ -87,3 +87,9 @@ Tapping a container uses its configured Unraid WebUI automatically. Both HTTP an
 ## Interface and app folders
 
 The interface uses open sections, rounded controls and native Liquid Glass on iOS 26, with material fallback on iOS 18 and opaque surfaces for Reduce Transparency/Increased Contrast. Apps → + → New folder creates a per-server folder. Touch and hold an app → Move to folder to organize it; Move out of folder returns it to the main grid. Folder menus rename or remove folders; removing a folder only changes organization, never stops or deletes containers. Membership uses container names so Docker container-ID changes after updates do not lose the arrangement. Renaming a container requires assigning its new name again. Saved external shortcuts can also be grouped.
+
+## Install and remove containers
+
+Apps has Installed and App Store tabs. App Store embeds the selected server's Community Applications page over the same private connection. It uses the server's own login, templates, settings and installation confirmation; a server web login may be required. AsterOS does not scrape credentials or forward its API key into the browser. Community Applications must be available on that Unraid server. Switching back to Installed refreshes the Docker list. This is an integrated WebGUI installer, not a native GraphQL catalog/install API (the published schema does not expose container creation).
+
+Long-press a container → Remove container opens a confirmation explaining that its writable layer is deleted and running work is interrupted. The native API request specifies `withImage: false`; mounted shares, appdata and volumes are not deleted. Requires Docker delete permission. AsterOS never automatically retries destructive requests. No real server containers were created or removed during development verification.
