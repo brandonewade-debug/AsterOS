@@ -82,7 +82,7 @@ struct DirectFile: Identifiable {
     }
     private func begin(_ connection: ShareConnection) -> SMBClient {
         busy = true; cancelled = false; timedOut = false; error = nil
-        let client = SMBClient(host: connection.host)
+        let client = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
         activeClient = client; touchTimeout()
         return client
     }
@@ -92,13 +92,13 @@ struct DirectFile: Identifiable {
         busy = false; progress = nil
     }
     private func check() throws {
-        if timedOut { throw AppError.message("The file connection timed out. Check your local network or VPN, then retry.") }
+        if timedOut { throw AppError.message("The file connection timed out. Check your local network or AsterOS private connection, then retry.") }
         if cancelled || Task.isCancelled { throw CancellationError() }
     }
     private func report(_ error: Error) {
-        if timedOut { self.error = "The file connection timed out. Check your local network or VPN, then retry." }
+        if timedOut { self.error = "The file connection timed out. Check your local network or AsterOS private connection, then retry." }
         else if cancelled || error is CancellationError { self.error = "Transfer or connection cancelled." }
-        else { self.error = "\(error.localizedDescription) Check the share account, its permissions, and your local network or VPN." }
+        else { self.error = "\(error.localizedDescription) Check the share account, its permissions, and your local network or AsterOS private connection." }
     }
     func cancel() { cancelled = true; activeClient?.session.disconnect() }
     private func login(_ client: SMBClient, connection: ShareConnection) async throws {
@@ -278,7 +278,7 @@ struct DirectFilesView: View {
                     ContentUnavailableView {
                         Label("Your Unraid files", systemImage: "folder.fill")
                     } description: {
-                        Text("Browse shares, upload and download directly. Connect with an Unraid share account on your local network or VPN.")
+                        Text("Browse shares, upload and download directly. Connect with an Unraid share account on your local network or AsterOS private connection.")
                     } actions: {
                         Button("Connect shares") { setup = true }.buttonStyle(.borderedProminent)
                     }
@@ -370,7 +370,7 @@ struct ShareConnectionView: View {
             Form {
                 Section("Server") {
                     TextField("Hostname or IP address", text: $host).keyboardType(.URL)
-                    Text("Use the server’s local or VPN address. Your HTTPS website and Unraid Connect URL do not provide a remote SMB tunnel.").font(.caption).foregroundStyle(.secondary)
+                    Text("Use the server’s full Tailscale name or IP for the AsterOS private connection, or its LAN address on Wi-Fi.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Unraid share account") {
                     TextField("Username", text: $username).textContentType(.username)

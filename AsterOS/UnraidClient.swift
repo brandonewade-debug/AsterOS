@@ -10,17 +10,7 @@ final class RejectRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendab
 final class UnraidClient {
     let profile: ServerProfile
     private let key: String
-    private let session: URLSession
-    init(profile: ServerProfile, key: String) {
-        self.profile = profile; self.key = key
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 30
-        configuration.httpShouldSetCookies = false
-        configuration.urlCache = nil
-        session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)
-    }
-    deinit { session.invalidateAndCancel() }
+    init(profile: ServerProfile, key: String) { self.profile = profile; self.key = key }
     func query<T: Decodable>(_ document: String, variables: [String: String] = [:]) async throws -> T {
         var request = URLRequest(url: AddressPolicy.endpoint(profile.address))
         request.httpMethod = "POST"
@@ -28,6 +18,14 @@ final class UnraidClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-api-key")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["query": document, "variables": variables])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.proxyConfigurations = try await TailnetStore.shared.prepare(for: profile.address.host)
+        let session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AppError.message("The server returned an invalid response.") }
         if (300...399).contains(http.statusCode) {

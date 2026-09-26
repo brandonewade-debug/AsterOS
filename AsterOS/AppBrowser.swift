@@ -1,8 +1,10 @@
 import SwiftUI
 import WebKit
+import Combine
 
 @MainActor final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
+    private var routeObserver: AnyCancellable?
     @Published var title = ""
     @Published var host = ""
     @Published var back = false
@@ -15,9 +17,19 @@ import WebKit
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
+        routeObserver = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
+            self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies
+        }
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: url))
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let proxies = try await TailnetStore.shared.prepare(for: url.host)
+                self.webView.configuration.websiteDataStore.proxyConfigurations = proxies
+                self.webView.load(URLRequest(url: url))
+            } catch { self.error = error.localizedDescription; self.loading = false }
+        }
     }
     private func sync() {
         title = webView.title ?? "App"

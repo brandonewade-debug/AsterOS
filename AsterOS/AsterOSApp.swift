@@ -2,7 +2,7 @@ import SwiftUI
 
 @main struct AsterOSApp: App {
     @StateObject private var store = AppStore()
-    @StateObject private var vpn = VPNStore()
+    @StateObject private var vpn = TailnetStore.shared
     var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).tint(.mint) } }
 }
 enum DockTheme {
@@ -18,7 +18,7 @@ struct Panel<Content: View>: View {
     }
 }
 struct RootView: View {
-    @EnvironmentObject var vpn: VPNStore
+    @EnvironmentObject var vpn: TailnetStore
     @EnvironmentObject var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var setup = false
@@ -36,6 +36,7 @@ struct RootView: View {
         .onAppear { if store.selected == nil && !store.demo { setup = true } }
         .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)") {
             guard scenePhase == .active else { return }
+            await vpn.foreground()
             while !Task.isCancelled {
                 await store.refresh()
                 do { try await Task.sleep(for: .seconds(15)) } catch { break }
@@ -131,7 +132,10 @@ struct ConnectionView: View {
                         Image("BrandMark").resizable().scaledToFit().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
                         Text("Your server. Within reach.").font(.title2.bold())
                     }
-                    Text("Connect using your own HTTPS domain, a VPN-reachable address, or your configured Unraid Connect remote URL.").foregroundStyle(.secondary)
+                    Text("Connect privately through Tailscale, or use your own HTTPS server address.").foregroundStyle(.secondary)
+                }
+                Section {
+                    NavigationLink { TailnetSetupView() } label: { Label("Connect with Tailscale", systemImage: "network.badge.shield.half.filled") }
                 }
                 Section {
                     TextField("Server name", text: $name)
@@ -259,9 +263,11 @@ struct AppsView: View {
 struct ContainerIcon: View {
     let container: Container
     let server: URL?
+    @State private var loadedImage: UIImage?
+    @ObservedObject private var tailnet = TailnetStore.shared
     var body: some View {
-        AsyncImage(url: container.iconAddress(server: server)) { phase in
-            if case let .success(image) = phase { image.resizable().scaledToFit().padding(2) }
+        Group {
+            if let loadedImage { Image(uiImage: loadedImage).resizable().scaledToFit().padding(2) }
             else {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18).fill(.mint.opacity(0.14))
@@ -272,6 +278,20 @@ struct ContainerIcon: View {
             .overlay(alignment: .bottomTrailing) {
                 Circle().fill(container.state == "RUNNING" ? Color.green : Color.secondary)
                     .frame(width: 10, height: 10).overlay(Circle().stroke(DockTheme.background, lineWidth: 2)).offset(x: 2, y: 2)
+            }
+            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)") {
+                loadedImage = nil
+                guard let url = container.iconAddress(server: server) else { return }
+                do {
+                    let config = URLSessionConfiguration.ephemeral
+                    config.timeoutIntervalForResource = 15
+                    config.proxyConfigurations = try await tailnet.prepare(for: url.host)
+                    let session = URLSession(configuration: config, delegate: RejectRedirects(), delegateQueue: nil)
+                    defer { session.invalidateAndCancel() }
+                    let (bytes, response) = try await session.data(from: url)
+                    guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200, bytes.count < 5_000_000 else { return }
+                    loadedImage = UIImage(data: bytes)
+                } catch { /* Keep the container initials if its icon is unavailable. */ }
             }
     }
 }
@@ -346,7 +366,7 @@ struct SettingsView: View {
                     if store.selected != nil { Button("Remove selected server", role: .destructive) { removing = true } }
                 }
                 Section("Remote access") {
-                    NavigationLink { VPNSetupView() } label: { Label("AsterOS VPN", systemImage: "network.badge.shield.half.filled") }
+                    NavigationLink { TailnetSetupView() } label: { Label("Private connection", systemImage: "network.badge.shield.half.filled") }
                 }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)

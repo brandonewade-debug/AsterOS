@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Combine
 
 // The callback is intercepted locally, before WebKit sends it to the server.
 // No API key, password, or browser cookie is sent to an AsterOS cloud service.
@@ -59,6 +60,7 @@ struct UnraidAuthorization: Identifiable {
 @MainActor final class UnraidSignInModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let request: UnraidAuthorization
     let webView: WKWebView
+    private var routeObserver: AnyCancellable?
     @Published var error: String?
     @Published var loading = true
     @Published var host: String
@@ -72,9 +74,19 @@ struct UnraidAuthorization: Identifiable {
         configuration.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        routeObserver = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
+            self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.load(URLRequest(url: request.authorizationURL()))
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let proxies = try await TailnetStore.shared.prepare(for: request.authorizationURL().host)
+                self.webView.configuration.websiteDataStore.proxyConfigurations = proxies
+                self.webView.load(URLRequest(url: request.authorizationURL()))
+            } catch { self.error = error.localizedDescription; self.loading = false }
+        }
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard !completed, let url = action.request.url else { decisionHandler(.cancel); return }
@@ -155,7 +167,11 @@ struct UnraidSignInView: View {
                     if let error = model.error { Text(error).foregroundStyle(.orange) }
                     Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")
                     Button("Continue to approval") { model.continueToApproval() }
-                    Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
+                    if TailnetStore.shared.enabled && TailnetPolicy.contains(model.request.server.host ?? "") {
+                        Text("Stay in AsterOS to use its private connection. Safari does not share this connection.").foregroundStyle(.secondary)
+                    } else {
+                        Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
+                    }
                     Text("In Safari, approve access, copy the generated key, then return to AsterOS and paste it. Website logins do not unlock native API requests through Cloudflare or Organizr.").foregroundStyle(.secondary)
                 }.font(.caption).padding().background(DockTheme.card)
             }

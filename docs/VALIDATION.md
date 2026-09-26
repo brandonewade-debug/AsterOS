@@ -86,3 +86,15 @@ The owner completed Unraid login, approval, and the authenticated overview reque
 - Strict deep signature verification passed. Both app and extension have the packet-tunnel-provider entitlement and the matching shared VPN Keychain access group.
 - devicectl confirmed installation and successful launch of com.asterlinelabs.asteros on the physical iPhone. Earlier device-signing blocker is resolved.
 - No VPN profile or WireGuard handshake has been tested yet; Unraid peer and reachable UDP endpoint setup remain outstanding.
+
+
+## Embedded Tailscale migration — September 26, 2026
+
+- libtailscale `59d4bb82744915815178e0f0776d60026a397ee7`, Go 1.25.5: device and simulator frameworks built successfully. Go 1.27.1 is incompatible with this revision's JSON dependency, so the bootstrap pins the supported toolchain.
+- 13 regression tests passed on iPhone 17 Pro simulator, including Keychain round-trip, API redirect/callback safety, private route boundaries and auth URL validation.
+- An opt-in integration check created an unapproved ephemeral userspace node, obtained its official interactive auth URL and received HTTP 200 from the authenticated local API through SOCKS. It closed the node and removed its temporary state. Source preserved under scripts/diagnostics, excluded from ordinary offline CI tests.
+- A development-signed generic iPhone build succeeded; phone was unavailable during the first installation attempt. Do not claim authenticated on-device validation from this build result.
+- Server-side TLS check confirmed the selected server's private DNS name/HTTPS port returns 302 to the UI with normal certificate verification. This is not an authenticated API check from AsterOS.
+- Pending: owner approval, native API sign-in over embedded route, Docker page/icon and SMB read/write validation, background/foreground recovery on hardware, account sign-out/reconnect. Packaging/license/privacy review and complete transitive notices are required before commercial distribution.
+
+- Final generic iPhone build also passed deep/strict code-signature verification. The upstream console auth-URL logging default is suppressed by a documented source patch. Physical installation remains pending phone reconnection.

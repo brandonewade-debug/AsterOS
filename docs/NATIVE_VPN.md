@@ -1,3 +1,5 @@
+> Historical approach: superseded by embedded Tailscale. The current project does not build or install this extension. See EMBEDDED_TAILSCALE.md.
+
 # AsterOS native WireGuard VPN
 
 ## Behavior

@@ -4,12 +4,14 @@ A native iPhone and iPad companion for Unraid, by Asterline Labs. Development fo
 
 ## Open and run
 
-1. Open `AsterOS.xcodeproj` on a Mac with Xcode 16 or newer.
-2. Select the AsterOS scheme and an iPhone simulator, then Run.
-3. Choose **Explore demo**, or enter your server's HTTPS address and choose **Sign in to Unraid**. Approve AsterOS to return the app credential automatically. Manual key entry is an optional fallback.
-4. For a physical device, set your signing team and a unique bundle identifier in the app target. The current identifier `com.asterlinelabs.asteros` is provisional; it is not registered by this project.
+1. On a Mac with Xcode 16.1+ and Go installed, run `bash scripts/bootstrap_tailnet.sh` (first build downloads pinned sources and Go 1.25.5).
+2. Run `python3 scripts/generate_project.py`, then open `AsterOS.xcodeproj`.
+3. Select AsterOS and an iPhone simulator, or your development signing team and physical iPhone.
+4. Choose **Connect with Tailscale**, sign in and approve this AsterOS device in your existing tailnet, select the server and its HTTPS port, then return to **Sign in to Unraid**. No manual API key is required. Direct HTTPS/Unraid Connect addresses remain available.
 
-Requires iOS/iPadOS 17+, Xcode, and Go (tested with 1.27.1; install via `brew install go`). Native VPN uses a vendored official WireGuardKit revision with documented build-compatibility fixes. Direct file access uses the MIT-licensed SMBClient package pinned to revision 66eafaa6d17e034e8036dee4b3ebc1b52cb53919; its notice is bundled in the app. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. The companion Files integration also compiled successfully and passed the same four checks. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
+Requires iOS/iPadOS 18.1+ (the embedded framework's minimum), Xcode, and Go. The bootstrap script pins libtailscale/TailscaleKit to `59d4bb82744915815178e0f0776d60026a397ee7` and SMBClient to `66eafaa6d17e034e8036dee4b3ebc1b52cb53919`. A small documented SMB patch injects per-client Network parameters without changing its server hostname or authentication. Frameworks/dependency worktrees are generated under ignored `.build/`; they are not committed.
+
+On September 26, 2026, the embedded approach passed 13 simulator regression tests, an opt-in real-network check obtaining an official Tailscale login URL and HTTP 200 through the local SOCKS proxy, and a development-signed iPhone build. Live user-approved tailnet access, Unraid sign-in, SMB transfers and suspend/recovery remain to be validated. This is an experimental development build, not a TestFlight/App Store release.
 
 ### Simulator signing
 
@@ -21,7 +23,7 @@ xcodebuild test -project AsterOS.xcodeproj -scheme AsterOS \
   CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
 ```
 
-Choose an installed simulator name. The hosted Keychain regression test saves, reads, updates, and removes only a randomly identified test credential. All nine XCTest checks passed locally with signing enabled.
+Choose an installed simulator name. The hosted Keychain regression test saves, reads, updates, and removes only a randomly identified test credential. All 13 current XCTest checks passed locally with signing enabled.
 
 ## Implemented source
 
@@ -43,7 +45,7 @@ Choose an installed simulator name. The hosted Keychain regression test saves, r
 
 ## Important boundaries
 
-Files connects directly to Unraid SMB shares using a separate share account stored in Keychain. Use a LAN or VPN address; HTTPS reverse proxies and Unraid Connect are not SMB tunnels. Root cannot access SMB shares. Direct uploads use a unique staging name and refuse to overwrite an existing destination; interrupted transfers must be restarted. The companion remains available as an optional Files connection with resumable uploads. Photos remains a clearly labeled future feature. No app catalog, installs, updates, VM management, SSH, push notifications, biometric lock, relay, or automatic LAN/remote fallback is implemented. Companion storage is independent of the selected Unraid dashboard profile and clearly displays its own hostname. Only one companion connection is stored in this preview.
+Files connects directly to Unraid SMB shares using a separate share account stored in Keychain. Use the full Tailscale DNS name/IP through AsterOS Private connection, or a LAN address; HTTPS reverse proxies and Unraid Connect are not SMB tunnels. Root cannot access SMB shares. Direct uploads use a unique staging name and refuse to overwrite an existing destination; interrupted transfers must be restarted. The companion remains available as an optional Files connection with resumable uploads. Photos remains a clearly labeled future feature. No app catalog, installs, updates, VM management, SSH, push notifications, biometric lock, relay, or automatic LAN/remote fallback is implemented. Companion storage is independent of the selected Unraid dashboard profile and clearly displays its own hostname. Only one companion connection is stored in this preview.
 
 This initial browser uses ephemeral sessions: website logins are cleared when its WebKit session is released. Persistent isolated app sessions, downloads/uploads and external OAuth need implementation and device validation before release. Some providers disallow embedded login; use Open in Safari in this preview. Browser sessions never receive the Unraid API key.
 
@@ -60,10 +62,12 @@ The project belongs in the private `brandonewade-debug/AsterOS` repository. Open
 See `docs/PRODUCT.md` for the implementation roadmap and `docs/VALIDATION.md` for the validation status and release gates.
 
 
-## Native VPN preview
+## Embedded private connection
 
-Settings → AsterOS VPN imports a dedicated WireGuard client `.conf` profile and creates an app-owned iOS Packet Tunnel configuration. On successful setup, connect-on-launch is enabled; switching apps or locking the device does not disconnect. Use Disconnect explicitly. This replaces the prior Shortcuts setup guide.
+Settings → Private connection joins the existing tailnet as an AsterOS-owned node. The separate Tailscale iOS application's configuration is not imported. This build links only the embedded Tailscale Go runtime; the previous WireGuard extension and sources are excluded from the generated project, retained only as historical source.
 
-Only private split-tunnel routes and one server peer are accepted. Full-tunnel routes, DNS overrides, wg-quick command hooks and unknown fields are rejected. The configuration is stored in shared Keychain; system preferences contain only its persistent reference. Import never logs keys. The imported file itself contains secrets and must be protected.
+Only full `.ts.net` names and Tailscale IPv4/IPv6 ranges use the authenticated in-process SOCKS proxy. API requests, Unraid sign-in, Docker browser pages/icons and SMB connections use that route; public sites stay direct. TLS verification and API redirect blocking remain enabled. No companion, system VPN entitlement, Shortcuts automation, public tunnel or router forward is required. The Unraid server must already be on the tailnet, with access rules permitting this device and the required ports.
 
-A real tunnel requires a physical iPhone/iPad, Apple development provisioning for both bundle identifiers and a configured, externally reachable WireGuard UDP endpoint on Unraid. A VPN profile cannot reuse a Tailscale peer or HTTPS/Cloudflare URL. The simulator disables profile installation and connection operations explicitly. See [native VPN setup](docs/NATIVE_VPN.md).
+The app starts its saved node on launch. It deliberately does not stop on background/inactive transitions. iOS may suspend networking; foreground entry verifies the loopback listener and recreates the node using its existing identity if that listener has been reclaimed. API mutations are never automatically replayed. Active transfers may need restarting. Force-quitting ends the app-owned process; tailnet presence may take time to update. This is not a system-wide VPN.
+
+State is kept in app-private Application Support, excluded from backup, with iOS file protection. API/share credentials remain in device-only Keychain. Explicit Tailscale sign-out calls the local logout API. See [embedded networking](docs/EMBEDDED_TAILSCALE.md) for routing, build and validation details.
