@@ -247,7 +247,7 @@ struct FilesView: View {
     @EnvironmentObject var app: AppStore
     var body: some View {
         if let server = app.selected, !app.demo {
-            DirectFilesView(server: server).id(server.id)
+            DirectFilesView(server: server).id("files-" + server.id.uuidString)
         } else {
             NavigationStack {
                 ContentUnavailableView("Connect a server", systemImage: "folder", description: Text("Add your Unraid server to browse its shares directly. No companion download is required."))

@@ -17,18 +17,20 @@ struct Panel<Content: View>: View {
             .overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.09)))
     }
 }
+enum AppTab: String { case server, files, photos, apps, settings }
 struct RootView: View {
+    @SceneStorage("selectedAppTab") private var selectedTab = AppTab.server
     @EnvironmentObject var vpn: TailnetStore
     @EnvironmentObject var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var setup = false
     var body: some View {
-        TabView {
-            DashboardView().tabItem { Label("Server", systemImage: "server.rack") }
-            FilesView().tabItem { Label("Files", systemImage: "folder") }
-            PhotosView().tabItem { Label("Photos", systemImage: "photo") }
-            AppsView().tabItem { Label("Apps", systemImage: "square.grid.2x2") }
-            SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
+        TabView(selection: $selectedTab) {
+            Tab("Server", systemImage: "server.rack", value: AppTab.server) { DashboardView() }
+            Tab("Files", systemImage: "folder", value: AppTab.files) { FilesView() }
+            Tab("Photos", systemImage: "photo", value: AppTab.photos) { PhotosView() }
+            Tab("Apps", systemImage: "square.grid.2x2", value: AppTab.apps) { AppsView() }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) { SettingsView() }
         }
         .preferredColorScheme(.dark)
         .task(id: scenePhase) { if scenePhase == .active { await vpn.foreground() } }

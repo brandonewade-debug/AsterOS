@@ -228,7 +228,7 @@ enum PhotoBackupPolicy {
 struct PhotosView: View {
     @EnvironmentObject var app: AppStore
     var body: some View {
-        if let server = app.selected, !app.demo { PhotoBackupView(server: server).id(server.id) }
+        if let server = app.selected, !app.demo { PhotoBackupView(server: server).id("photos-" + server.id.uuidString) }
         else { NavigationStack { ContentUnavailableView("Connect your server", systemImage: "photo", description: Text("Connect Unraid to set up photo backup to one of its shares.")).navigationTitle("Photos") } }
     }
 }
