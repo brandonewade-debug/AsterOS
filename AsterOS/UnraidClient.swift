@@ -30,6 +30,9 @@ final class UnraidClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: ["query": document, "variables": variables])
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AppError.message("The server returned an invalid response.") }
+        if (300...399).contains(http.statusCode) {
+            throw AppError.message(Self.redirectMessage(response: http))
+        }
         if http.statusCode == 401 || http.statusCode == 403 { throw AppError.message("Access denied. Check the API key and its permissions. A proxy login may also be blocking API access.") }
         guard (200...299).contains(http.statusCode) else { throw AppError.message("Server returned HTTP \(http.statusCode). Check the address and proxy configuration. API redirects are blocked to protect your key.") }
         guard http.mimeType?.contains("json") == true else { throw AppError.message("This address returned a web page instead of the API. Check for a proxy sign-in page or an incorrect server address.") }
@@ -40,6 +43,12 @@ final class UnraidClient {
         }
         guard let result = payload.data else { throw AppError.message("The API returned no data.") }
         return result
+    }
+    static func redirectMessage(response: HTTPURLResponse) -> String {
+        let destination = response.value(forHTTPHeaderField: "Location")
+            .flatMap { URL(string: $0, relativeTo: response.url)?.absoluteURL.host }
+        let hint = destination.map { " to \($0)" } ?? ""
+        return "The server redirected the API request\(hint) (HTTP \(response.statusCode)). A website login such as Cloudflare Access or Organizr, or an incorrect server URL, may be blocking it. Use a directly reachable HTTPS local/VPN address or a separately authenticated app endpoint. Your API key was not forwarded to the redirect."
     }
     func overview() async throws -> Overview { try await query(Self.overviewQuery) }
     func containers() async throws -> [Container] {

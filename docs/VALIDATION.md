@@ -25,7 +25,7 @@ The initial foundation compiled with Xcode 26.6 (17F113) on the development Mac.
 - Validate redirects, certificate errors, HTML gateway pages, offline state, scene backgrounding, slow networks, profile switching during requests and action responses after server changes.
 - Run a full app-browser login sequence including redirects; test an embedded-login-blocking provider and Safari fallback. This preview clears web sessions on close.
 - Confirm start/stop only affects the selected container on the selected server; stale data and unknown outcomes must remain visible.
-- Add app icon/launch assets, finalized bundle ID, signing, privacy policy/support URL and App Store privacy answers.
+- Finalize launch assets, bundle ID, signing, privacy policy/support URL and App Store privacy answers. The approved app icon is now included.
 
 ## Before paid release
 
@@ -36,3 +36,9 @@ Complete the core features, capability negotiation, onboarding, security review 
 The companion image built on Unraid 7.2.2 and Docker 27.5.1. The container reports healthy, runs as 99:100 with a read-only root, and restarts unless stopped. Its live HTTP smoke test passed device pairing, folder creation, a two-chunk upload with resume offset verification, SHA-256 completion and exact-content download. The temporary test device was revoked afterwards.
 
 The deployment uses a dedicated AsterOS storage folder, 10 GiB free-space reserve, 1 GiB per-file test limit, localhost-only port 8790 and Tailscale Serve HTTPS on port 8791. No router forwarding or public domain route was added. TLS health verification succeeded with explicit address resolution; normal DNS lookup from the server did not resolve its tailnet hostname. End-to-end phone pairing over Tailscale remains to be validated.
+
+## Sign-in and branding update, 2026-09-26
+
+Xcode 26.6 built the updated app and all seven XCTest checks passed on iPhone 17 Pro / iOS 26.5. New tests cover callback origin/port/state/expiry, duplicate parameters, read-only default scopes, manual Safari fallback URLs, and redaction of sensitive redirect URL data. The approved AsterOS emblem is included in the asset catalog as the 1024-pixel iOS app icon and onboarding brand mark.
+
+The development Mac reached the server directly over LAN HTTPS with a trusted certificate and received a GraphQL authentication response. The public domain's 302 was traced to Organizr middleware in Nginx. Interactive Unraid sign-in, automatic callback delivery, and authenticated dashboard loading still need the owner's end-to-end test; no API key or password was extracted from the screenshot. Cloudflare and Organizr policies were not changed.

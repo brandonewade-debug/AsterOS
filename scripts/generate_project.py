@@ -19,10 +19,15 @@ for folder in ['AsterOS', 'AsterOSTests']:
         ref = add(str(path.relative_to(root)), f'isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {q(path.name)}; sourceTree = "<group>";')
         files.append(ref)
         builds.append(add('build/' + str(path.relative_to(root)), f'isa = PBXBuildFile; fileRef = {ref};'))
+    resources = []
+    if folder == 'AsterOS':
+        ref = add('assets', 'isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>";')
+        files.append(ref)
+        resources.append(add('build/assets', f'isa = PBXBuildFile; fileRef = {ref};'))
     groups.append(add('group/' + folder, f'isa = PBXGroup; children = {refs(files)}; path = {folder}; sourceTree = "<group>";'))
     add('sources/' + folder, f'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = {refs(builds)}; runOnlyForDeploymentPostprocessing = 0;')
     add('frameworks/' + folder, 'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
-    add('resources/' + folder, 'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+    add('resources/' + folder, f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = {refs(resources)}; runOnlyForDeploymentPostprocessing = 0;')
 
 products = []
 for name, extension, filetype in [('AsterOS','app','wrapper.application'), ('AsterOSTests','xctest','wrapper.cfbundle')]:
@@ -40,7 +45,7 @@ for scope in ['project', 'AsterOS', 'AsterOSTests']:
         if scope != 'project':
             settings.update({'PRODUCT_NAME':'$(TARGET_NAME)', 'PRODUCT_BUNDLE_IDENTIFIER': 'com.asterlinelabs.' + scope.lower(), 'GENERATE_INFOPLIST_FILE':'YES', 'CODE_SIGN_STYLE':'Automatic', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator', 'CURRENT_PROJECT_VERSION':'1', 'MARKETING_VERSION':'0.1.0'})
             if scope == 'AsterOS':
-                settings.update({'INFOPLIST_KEY_CFBundleDisplayName':'AsterOS', 'INFOPLIST_KEY_UILaunchScreen_Generation':'YES', 'INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES', 'INFOPLIST_KEY_NSLocalNetworkUsageDescription':'Connect to the Unraid server and apps you add on your local network.', 'INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight', 'INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight', 'LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
+                settings.update({'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon', 'INFOPLIST_KEY_CFBundleDisplayName':'AsterOS', 'INFOPLIST_KEY_UILaunchScreen_Generation':'YES', 'INFOPLIST_KEY_UIApplicationSceneManifest_Generation':'YES', 'INFOPLIST_KEY_NSLocalNetworkUsageDescription':'Connect to the Unraid server and apps you add on your local network.', 'INFOPLIST_KEY_UISupportedInterfaceOrientations':'UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight', 'INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad':'UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight', 'LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             else:
                 settings.update({'TEST_HOST':'$(BUILT_PRODUCTS_DIR)/AsterOS.app/AsterOS', 'BUNDLE_LOADER':'$(TEST_HOST)', 'LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks @loader_path/Frameworks'})
         content = ' '.join(f'{k} = {q(v)};' for k,v in sorted(settings.items()))

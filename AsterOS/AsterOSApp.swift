@@ -112,17 +112,22 @@ struct DashboardView: View {
 struct ConnectionView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var address = ""
+    @AppStorage("connectionDraftName") private var name = ""
+    @AppStorage("connectionDraftAddress") private var address = ""
     @State private var key = ""
     @State private var kind: ConnectionKind = .custom
+    @State private var authorization: UnraidAuthorization?
+    @State private var allowDockerControl = false
     @State private var busy = false
     @State private var error: String?
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Your server. Within reach.").font(.title2.bold())
+                    HStack(spacing: 12) {
+                        Image("BrandMark").resizable().scaledToFit().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
+                        Text("Your server. Within reach.").font(.title2.bold())
+                    }
                     Text("Connect using your own HTTPS domain, a VPN-reachable address, or your configured Unraid Connect remote URL.").foregroundStyle(.secondary)
                 }
                 Section {
@@ -133,16 +138,21 @@ struct ConnectionView: View {
                 } header: { Text("Connection") } footer: {
                     Text("Create an API key in Unraid Settings → Management Access → API. Use read access for system, array and Docker; Docker start/stop additionally needs update permission. Keys are stored in this device’s Keychain.")
                 }
+                Section {
+                    Toggle("Allow Docker start / stop", isOn: $allowDockerControl)
+                    Button {
+                        do { error = nil; authorization = try UnraidAuthorization(address: address, allowDockerControl: allowDockerControl) }
+                        catch { self.error = error.localizedDescription }
+                    } label: { Label("Sign in to Unraid", systemImage: "person.badge.key.fill") }
+                    .disabled(busy || address.isEmpty)
+                } header: { Text("Connect through your server") } footer: {
+                    Text("Sign in and approve access to create a key automatically. Use a directly reachable HTTPS server address. Cloudflare Access and Organizr are separate website login layers; use a local/VPN address if they block the API.")
+                }
                 if kind == .connect { Section { Text("Use the server URL from Connect’s Manage link. This does not sign into your Unraid.net account or route Docker apps through Connect.") } }
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section {
                     Button {
-                        busy = true; error = nil
-                        Task {
-                            defer { busy = false }
-                            do { try await store.connect(name: name, address: address, key: key, kind: kind); key = ""; dismiss() }
-                            catch { self.error = error.localizedDescription }
-                        }
+                        testConnection()
                     } label: { HStack { Text("Test & save connection"); Spacer(); if busy { ProgressView() } } }
                     .disabled(busy || address.isEmpty || key.isEmpty)
                     Button("Explore demo") { store.showDemo(); dismiss() }.disabled(busy)
@@ -150,6 +160,19 @@ struct ConnectionView: View {
             }.navigationTitle("Connect your server")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
                 .interactiveDismissDisabled(busy)
+                .sheet(item: $authorization) { request in
+                    UnraidSignInView(request: request) { receivedKey in
+                        key = receivedKey; authorization = nil; testConnection()
+                    }
+                }
+        }
+    }
+    private func testConnection() {
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do { try await store.connect(name: name, address: address, key: key, kind: kind); key = ""; dismiss() }
+            catch { self.error = error.localizedDescription }
         }
     }
 }
