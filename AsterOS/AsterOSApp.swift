@@ -26,17 +26,17 @@ struct RootView: View {
         TabView {
             DashboardView().tabItem { Label("Server", systemImage: "server.rack") }
             FilesView().tabItem { Label("Files", systemImage: "folder") }
-            PlannedView(title: "Photos", symbol: "photo.on.rectangle", detail: "Photo backup, albums, and Live Photos are planned. This preview does not request photo access or upload your library.").tabItem { Label("Photos", systemImage: "photo") }
+            PhotosView().tabItem { Label("Photos", systemImage: "photo") }
             AppsView().tabItem { Label("Apps", systemImage: "square.grid.2x2") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .preferredColorScheme(.dark)
-        .task { await vpn.launch() }
+        .task(id: scenePhase) { if scenePhase == .active { await vpn.foreground() } }
         .sheet(isPresented: $setup) { ConnectionView() }
         .onAppear { if store.selected == nil && !store.demo { setup = true } }
-        .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)") {
+        .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)-\(vpn.running)") {
             guard scenePhase == .active else { return }
-            await vpn.foreground()
+            if let server = store.selected, TailnetPolicy.contains(server.address.host ?? ""), !vpn.running { return }
             while !Task.isCancelled {
                 await store.refresh()
                 do { try await Task.sleep(for: .seconds(15)) } catch { break }
@@ -45,6 +45,7 @@ struct RootView: View {
     }
 }
 struct DashboardView: View {
+    @EnvironmentObject var vpn: TailnetStore
     @EnvironmentObject var store: AppStore
     @State private var setup = false
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 14)]
@@ -93,8 +94,14 @@ struct DashboardView: View {
                                 }
                             }
                         }
-                    } else if store.loading { ProgressView("Connecting…").frame(maxWidth: .infinity) }
-                    else { Button("Connect a server") { setup = true }.buttonStyle(.borderedProminent) }
+                    } else if let selected = store.selected {
+                        if TailnetPolicy.contains(selected.address.host ?? ""), !vpn.running {
+                            ProgressView("Connecting to Tailscale…").frame(maxWidth: .infinity)
+                            Text(vpn.status).font(.caption).foregroundStyle(.secondary)
+                            NavigationLink("Private connection settings") { TailnetSetupView() }
+                        } else if store.loading { ProgressView("Loading your server…").frame(maxWidth: .infinity) }
+                        else { Button("Retry server connection") { Task { await store.refresh() } }.buttonStyle(.borderedProminent) }
+                    } else { Button("Connect a server") { setup = true }.buttonStyle(.borderedProminent) }
                 }.padding(20).frame(maxWidth: 900)
             }.frame(maxWidth: .infinity).background(DockTheme.background)
                 .navigationTitle("AsterOS")

@@ -98,3 +98,10 @@ The owner completed Unraid login, approval, and the authenticated overview reque
 - Pending: owner approval, native API sign-in over embedded route, Docker page/icon and SMB read/write validation, background/foreground recovery on hardware, account sign-out/reconnect. Packaging/license/privacy review and complete transitive notices are required before commercial distribution.
 
 - Final generic iPhone build also passed deep/strict code-signature verification. The upstream console auth-URL logging default is suppressed by a documented source patch. Physical installation remains pending phone reconnection.
+
+
+## Startup and Photos preview — September 26, 2026
+
+Device preferences confirmed one saved server, a selected profile, embedded Tailscale enabled, and a saved SMB account. The incorrect startup button came from the dashboard empty-data branch, not lost credentials. Dashboard now displays private-connection progress; API refresh begins immediately on Running instead of waiting for the polling interval.
+
+Photo backup uses explicit Photos authorization and explicit upload confirmation, a latest-five-item test option, original PhotoKit resources, per-asset completion receipts and non-overwriting staged writes. Two tests cover missing/changed/unsafe receipt resources and stable/versioned asset identities. Live uploads and restore suitability still require the owner-selected destination and photo permission; no user photo library was accessed or uploaded during development.

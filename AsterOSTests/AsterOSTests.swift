@@ -2,6 +2,21 @@ import XCTest
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    func testBackupReceiptRequiresEveryResourceAndSafeNames() {
+        let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
+        XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))
+        XCTAssertFalse(receipt.matches(["photo.heic": 12], asset: "asset"))
+        XCTAssertFalse(receipt.matches(["photo.heic": 12, "paired.mov": 29], asset: "asset"))
+        XCTAssertFalse(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "different"))
+        XCTAssertFalse(PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "../outside", size: 1)]).matches(["../outside": 1], asset: "asset"))
+    }
+    func testBackupIdentitySeparatesChangedAssets() {
+        let date = Date(timeIntervalSince1970: 10)
+        XCTAssertEqual(PhotoBackupPolicy.identifier("one", modified: date), PhotoBackupPolicy.identifier("one", modified: date))
+        XCTAssertNotEqual(PhotoBackupPolicy.identifier("one", modified: date), PhotoBackupPolicy.identifier("two", modified: date))
+        XCTAssertNotEqual(PhotoBackupPolicy.identifier("one", modified: date), PhotoBackupPolicy.identifier("one", modified: date.addingTimeInterval(1)))
+    }
+
     func testTailnetRoutesDoNotCapturePublicOrLANHosts() {
         for host in ["unraid.tail123.ts.net", "100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::42"] { XCTAssertTrue(TailnetPolicy.contains(host), host) }
         for host in ["login.tailscale.com", "tailscale.com", "evilts.net", "unraid.tail.ts.net.evil.test", "192.168.1.209", "100.63.255.255", "100.128.0.1", "", "ai", "localhost"] { XCTAssertFalse(TailnetPolicy.contains(host), host) }
