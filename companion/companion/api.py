@@ -1,4 +1,7 @@
 import os
+import logging
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 import threading
 import time
 from pathlib import Path
@@ -19,9 +22,43 @@ class Upload(Folder):
     sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
+def log_connection_url():
+    logger = logging.getLogger('uvicorn.error')
+    raw = os.getenv('ASTEROS_CONNECTION_URL', '').strip()
+    if not raw:
+        logger.info('AsterOS connection URL: not configured. Set ASTEROS_CONNECTION_URL to your HTTPS companion address.')
+        return
+    try:
+        url = urlsplit(raw)
+        valid = (url.scheme == 'https' and bool(url.hostname) and url.username is None
+                 and url.password is None and not url.query and not url.fragment
+                 and not any(ord(c) < 33 or ord(c) == 127 for c in raw))
+        if url.port is not None and not 1 <= url.port <= 65535:
+            valid = False
+    except ValueError:
+        valid = False
+    if not valid:
+        # Never echo malformed settings: they may contain a password or token.
+        logger.warning('AsterOS connection URL is invalid. Use HTTPS without credentials, query parameters, or fragments.')
+        return
+    access = {
+        'tailscale': 'Private; Tailscale must be connected on your device.',
+        'local': 'Local network or configured VPN required.',
+        'public': 'Remote HTTPS endpoint; paired-device authentication required.',
+    }.get(os.getenv('ASTEROS_CONNECTION_ACCESS', ''), 'Reachability depends on your proxy or VPN configuration.')
+    logger.info('AsterOS connection URL: %s', raw.rstrip('/'))
+    logger.info('AsterOS access: %s', access)
+    logger.info('Use this URL in AsterOS → Files → companion setup. This companion does not yet provide the server dashboard.')
+    logger.info('Generate a one-time pairing code: docker exec asteros-companion python -m companion.admin pair')
+
+
 def create_app(core=None):
     core = core or Companion(os.getenv('ASTEROS_STATE','/data'),os.getenv('ASTEROS_STORAGE','/storage'),int(os.getenv('ASTEROS_RESERVE_BYTES',str(1024**3))),int(os.getenv('ASTEROS_MAX_UPLOAD_BYTES',str(10*1024**3))))
-    app = FastAPI(title='AsterOS Companion',version='0.1.0',docs_url=None,redoc_url=None,openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app):
+        log_connection_url()
+        yield
+    app = FastAPI(title='AsterOS Companion',version='0.1.1',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     bearer = HTTPBearer(auto_error=False)
     attempts, attempts_lock = [], threading.Lock()
 
@@ -48,7 +85,7 @@ def create_app(core=None):
         return core.authenticate(credentials.credentials)
 
     @app.get('/health')
-    def health(): return {'status':'ok','service':'AsterOS Companion','version':'0.1.0'}
+    def health(): return {'status':'ok','service':'AsterOS Companion','version':'0.1.1'}
 
     @app.post('/v1/pair')
     def pair(body: Pair):
@@ -63,7 +100,7 @@ def create_app(core=None):
     @app.get('/v1/status')
     def status(device_id=Depends(device)):
         usage = __import__('shutil').disk_usage(core.storage)
-        return {'version':'0.1.0','device_id':device_id,'free_bytes':usage.free,'reserve_bytes':core.reserve,'capabilities':['files.list','files.download','folders.create','uploads.resume','uploads.sha256']}
+        return {'version':'0.1.1','device_id':device_id,'free_bytes':usage.free,'reserve_bytes':core.reserve,'capabilities':['files.list','files.download','folders.create','uploads.resume','uploads.sha256']}
 
     @app.delete('/v1/device')
     def revoke(device_id=Depends(device)):

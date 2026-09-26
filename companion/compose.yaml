@@ -1,7 +1,7 @@
 services:
   asteros-companion:
     build: .
-    image: asteros-companion:0.1.0
+    image: asteros-companion:0.1.1
     container_name: asteros-companion
     restart: unless-stopped
     user: "99:100"
@@ -20,6 +20,8 @@ services:
       - /tmp:size=32m,mode=1777
     environment:
       ASTEROS_RESERVE_BYTES: "1073741824"
+      ASTEROS_CONNECTION_URL: "${ASTEROS_CONNECTION_URL:-}"
+      ASTEROS_CONNECTION_ACCESS: "${ASTEROS_CONNECTION_ACCESS:-}"
     logging:
       driver: json-file
       options:

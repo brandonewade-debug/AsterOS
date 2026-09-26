@@ -44,3 +44,14 @@ A reverse proxy should enforce body/time limits, use TLS and avoid logging autho
 ## Tests
 
 From this directory, install requirements plus pytest/httpx in a virtual environment, then run `python -m pytest -q`. Tests cover authentication, pairing replay/expiry, path traversal, symlinks, chunk recovery across restart, checksum mismatch, cancellation, no-overwrite behavior, device isolation and free-space bounds.
+
+## Find the connection address in Docker logs
+
+Set `ASTEROS_CONNECTION_URL` to the externally reachable HTTPS base URL for this companion (not the Unraid WebGUI). Set `ASTEROS_CONNECTION_ACCESS` to `tailscale`, `local`, or `public` to label its reachability. In Unraid, these are editable container variables. On startup, Docker logs display:
+
+```text
+AsterOS connection URL: https://your-companion.example.com
+AsterOS access: Remote HTTPS endpoint; paired-device authentication required.
+```
+
+View the logs through Unraid Docker → asteros-companion → Logs, or `docker logs --tail 30 asteros-companion`. The URL is configuration, not automatic DNS/tunnel provisioning or a connectivity guarantee. The app currently uses it in Files companion setup; the Unraid server dashboard still connects separately. No pairing code, device token, or API key is logged. Generate pairing codes explicitly using the local admin command.
