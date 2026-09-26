@@ -1,0 +1,2 @@
+WireGuardKit sources from https://git.zx2c4.com/wireguard-apple at 2fec12a6e1f6e3460b6ee483aa00ad29cddadab1.
+Package.swift tools version changes from 5.3 to 5.5 because upstream uses macOS v12 and iOS v15 platform declarations requiring 5.5. The C umbrella header also explicitly includes sys/types.h for Xcode 26 module imports. Protocol and cryptographic implementations are unchanged. Go dependencies are pinned by upstream go.mod and go.sum.
