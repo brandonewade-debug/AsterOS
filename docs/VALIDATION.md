@@ -77,3 +77,12 @@ The owner completed Unraid login, approval, and the authenticated overview reque
 - Private configuration uses a shared Keychain persistent reference. No raw config in defaults, preferences, logs or source. Files are capped at 64 KiB.
 - The server has no active/populated WireGuard tunnel. Its network configuration was not changed. Peer setup and endpoint reachability remain required.
 - Earlier Tailscale connect/disconnect automation guide is superseded by native VPN controls. Backgrounding never triggers a disconnect.
+
+
+## Physical iPhone installation — 2026-09-26 14:34 America/Chicago
+
+- User paired iPhone 17 Pro Max running iOS 26.6.2 and enabled Developer Mode.
+- Development build succeeded using team FXN5ZF63XW with provisioning updates/device registration enabled.
+- Strict deep signature verification passed. Both app and extension have the packet-tunnel-provider entitlement and the matching shared VPN Keychain access group.
+- devicectl confirmed installation and successful launch of com.asterlinelabs.asteros on the physical iPhone. Earlier device-signing blocker is resolved.
+- No VPN profile or WireGuard handshake has been tested yet; Unraid peer and reachable UDP endpoint setup remain outstanding.
