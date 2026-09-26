@@ -25,6 +25,30 @@ final class AsterOSTests: XCTestCase {
         XCTAssertEqual(unordered.sorted { $0.localizedStandardCompare($1) == .orderedAscending }, names)
     }
 
+    func testSeparatedDestinationsFindPriorLayouts() {
+        let date = ISO8601DateFormatter().date(from: "2026-09-26T16:31:00Z")!
+        let zone = TimeZone(secondsFromGMT: 0)!
+        let video = PhotoBackupPolicy.destinations(date: date, layout: .monthly, isVideo: true, timeZone: zone)
+        XCTAssertEqual(video, [["Videos", "2026", "09"], ["Videos", "2026", "09", "26"], ["2026", "09"], ["2026", "09", "26"]])
+        XCTAssertEqual(PhotoBackupPolicy.destinations(date: date, layout: .daily, isVideo: false, timeZone: zone).first, ["Photos", "2026", "09", "26"])
+        XCTAssertEqual(PhotoBackupPolicy.destinations(date: nil, layout: .monthly, isVideo: false, timeZone: zone), [["Photos", "Unknown date"], ["Unknown date"]])
+    }
+
+    func testSavedBackupStateSurvivesSerialization() throws {
+        let checkpoint = PhotoBackupCheckpoint(share: "Media", folder: "Backup", completed: 27, total: 100, finished: false)
+        let restored = try JSONDecoder().decode(PhotoBackupCheckpoint.self, from: JSONEncoder().encode(checkpoint))
+        XCTAssertEqual(restored.completed, 27)
+        XCTAssertEqual(restored.total, 100)
+        XCTAssertEqual(restored.share, "Media")
+        XCTAssertFalse(restored.finished)
+        // A receipt read from disk remains authoritative after the in-memory run is gone.
+        let receipt = PhotoBackupReceipt(version: 1, asset: "same-asset", files: [.init(name: "photo.HEIC", size: 12), .init(name: "paired.MOV", size: 30)])
+        let recovered = try JSONDecoder().decode(PhotoBackupReceipt.self, from: JSONEncoder().encode(receipt))
+        XCTAssertTrue(recovered.matches(["photo.HEIC": 12, "paired.MOV": 30], asset: "same-asset"))
+        XCTAssertFalse(recovered.matches(["photo.HEIC": 12], asset: "same-asset"))
+        XCTAssertFalse(recovered.matches(["photo.HEIC": 12, "paired.MOV": 30], asset: "edited-asset"))
+    }
+
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
         let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
         XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))

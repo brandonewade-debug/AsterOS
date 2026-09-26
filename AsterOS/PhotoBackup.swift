@@ -12,6 +12,13 @@ struct PhotoBackupReceipt: Codable {
         version == 1 && asset == expected && !files.isEmpty && Set(files.map(\.name)).count == files.count && files.allSatisfy { (try? SharePolicy.name($0.name)) != nil && entries[$0.name] == $0.size }
     }
 }
+struct PhotoBackupCheckpoint: Codable {
+    let share: String
+    let folder: String
+    let completed: Int
+    let total: Int
+    let finished: Bool
+}
 enum PhotoFolderLayout: String, CaseIterable, Identifiable {
     case monthly, daily
     var id: String { rawValue }
@@ -28,6 +35,13 @@ enum PhotoBackupPolicy {
         guard let date else { return ["Unknown date"] }
         let month = [format(date, "yyyy", timeZone: timeZone), format(date, "MM", timeZone: timeZone)]
         return layout == .monthly ? month : month + [format(date, "dd", timeZone: timeZone)]
+    }
+    static func destinations(date: Date?, layout: PhotoFolderLayout, isVideo: Bool, timeZone: TimeZone) -> [[String]] {
+        let layouts = [layout] + PhotoFolderLayout.allCases.filter { $0 != layout }
+        let dates = layouts.map { folders(date: date, layout: $0, timeZone: timeZone) }
+        // Search the older mixed layout too; never re-upload just because organization changed.
+        let candidates = dates.map { [isVideo ? "Videos" : "Photos"] + $0 } + dates
+        return candidates.reduce(into: []) { result, path in if !result.contains(path) { result.append(path) } }
     }
     static func resourceName(date: Date?, originalName: String, identity: String, index: Int, timeZone: TimeZone) throws -> String {
         let original = try SharePolicy.name(originalName)
@@ -69,7 +83,16 @@ enum PhotoBackupPolicy {
             share = saved["share"] ?? ""; folder = saved["folder"] ?? "AsterOS Photos"
         }
         layout = UserDefaults.standard.string(forKey: settingsKey + "-layout").flatMap(PhotoFolderLayout.init(rawValue:)) ?? .monthly
+        if let data = UserDefaults.standard.data(forKey: settingsKey + "-checkpoint"),
+           let saved = try? JSONDecoder().decode(PhotoBackupCheckpoint.self, from: data), saved.share == share, saved.folder == folder {
+            completed = saved.completed; total = saved.total
+            status = saved.finished ? "Last backup complete · \(saved.completed) items" : "Saved progress · \(saved.completed) of \(saved.total) items · tap Back up now to resume"
+        }
         refreshPhotoCount()
+    }
+    private func saveCheckpoint(share: String, folder: String, finished: Bool = false) {
+        let saved = PhotoBackupCheckpoint(share: share, folder: folder, completed: completed, total: total, finished: finished)
+        if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: settingsKey + "-checkpoint") }
     }
     func refreshPhotoCount() {
         let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -163,6 +186,7 @@ enum PhotoBackupPolicy {
             UserDefaults.standard.set(timeZone.identifier, forKey: timeZoneKey)
             let fetched = assets(); count = fetched.count
             total = min(count, max(0, limit ?? count))
+            saveCheckpoint(share: share, folder: folder)
             for index in 0..<total {
                 try check(); touch()
                 let asset = fetched.object(at: fetched.count - total + index)
@@ -170,12 +194,12 @@ enum PhotoBackupPolicy {
                 let resources = PHAssetResource.assetResources(for: asset)
                 guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
                 let legacy = legacyFolders.contains(identity)
-                var components = legacy ? [identity] : PhotoBackupPolicy.folders(date: asset.creationDate, layout: layout, timeZone: timeZone)
+                let destinations = PhotoBackupPolicy.destinations(date: asset.creationDate, layout: layout, isVideo: asset.mediaType == .video, timeZone: timeZone)
+                var components = legacy ? [identity] : destinations[0]
                 let receiptName = legacy ? "complete.json" : ".asteros-" + identity + ".json"
                 // Find completed or interrupted backups in either layout before creating anything.
                 if !legacy {
-                    for candidateLayout in [layout] + PhotoFolderLayout.allCases.filter({ $0 != layout }) {
-                        let candidate = PhotoBackupPolicy.folders(date: asset.creationDate, layout: candidateLayout, timeZone: timeZone)
+                    for candidate in destinations {
                         var candidatePath = folder
                         var found = true
                         for component in candidate {
@@ -222,7 +246,9 @@ enum PhotoBackupPolicy {
                     guard let receipt = try? JSONDecoder().decode(PhotoBackupReceipt.self, from: bytes), receipt.matches(sizes, asset: identity) else {
                         throw AppError.message("A previous backup is missing files or has changed. Choose a new folder to make another complete copy; existing files were left untouched.")
                     }
-                    completed += 1; continue
+                    completed += 1
+                    saveCheckpoint(share: share, folder: folder)
+                    continue
                 }
                 // Export every available resource: originals, Live Photo video and edit resources.
                 var records: [PhotoBackupReceipt.Resource] = []
@@ -267,7 +293,9 @@ enum PhotoBackupPolicy {
                 for record in records { cachedSizes[path, default: [:]][record.name] = record.size }
                 cachedSizes[path, default: [:]][receiptName] = UInt64(encoded.count)
                 completed += 1
+                saveCheckpoint(share: share, folder: folder)
             }
+            saveCheckpoint(share: share, folder: folder, finished: true)
             progress = 1; status = "Backup complete · \(completed) items"
         } catch {
             if paused || error is CancellationError { status = "Paused · tap Back up now to continue" }
@@ -331,8 +359,8 @@ struct PhotoBackupView: View {
                     Picker("Organize by", selection: $backup.layout) {
                         ForEach(PhotoFolderLayout.allCases) { Text($0.label).tag($0) }
                     }.disabled(backup.busy)
-                    Text("Photos and videos go directly inside each month, or each day if selected. Filenames start with capture date and time, so name sorting keeps each month in day order. They also include a short identifier and the original name. Live Photo components share the same identifier.").font(.caption).foregroundStyle(.secondary)
-                    Text("Existing backups keep their current locations and are still recognized.").font(.caption).foregroundStyle(.secondary)
+                    Text("Separate Photos and Videos folders each contain Year → Month, with optional day folders. Live Photo video components stay in Photos with their image. Filenames start with capture date and time, so name sorting keeps each month in day order. They also include a short identifier and the original name. Live Photo components share the same identifier.").font(.caption).foregroundStyle(.secondary)
+                    Text("Progress is saved after each completed item. Restart the app and tap Back up now to resume: verified completed items are skipped. Existing backups keep their current locations, including videos already in mixed folders.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Photo access") {
                     Button("Allow Photos") { Task { await backup.allowPhotos() } }.disabled(backup.busy)
