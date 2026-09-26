@@ -69,7 +69,7 @@ struct UnraidAuthorization: Identifiable {
     private var resumedAfterLogin = false
     init(request: UnraidAuthorization) {
         self.request = request
-        host = request.server.host ?? "Unraid"
+        host = (request.server.host ?? "Unraid") + (request.server.port.map { ":\($0)" } ?? "")
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -79,15 +79,9 @@ struct UnraidAuthorization: Identifiable {
         }
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let proxies = try await TailnetStore.shared.prepare(for: request.authorizationURL().host)
-                self.webView.configuration.websiteDataStore.proxyConfigurations = proxies
-                self.webView.load(URLRequest(url: request.authorizationURL()))
-            } catch { self.error = error.localizedDescription; self.loading = false }
-        }
+        continueToApproval()
     }
+
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard !completed, let url = action.request.url else { decisionHandler(.cancel); return }
         let containsKey = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "api_key" } == true
@@ -125,7 +119,15 @@ struct UnraidAuthorization: Identifiable {
     func continueToApproval() {
         guard !completed else { return }
         error = nil; loading = true
-        webView.load(URLRequest(url: request.authorizationURL()))
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.webView.configuration.websiteDataStore.proxyConfigurations = try await TailnetStore.shared.prepare(for: self.request.server.host)
+                var navigation = URLRequest(url: self.request.authorizationURL())
+                navigation.timeoutInterval = 25
+                self.webView.load(navigation)
+            } catch { self.error = error.localizedDescription; self.loading = false }
+        }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
@@ -133,7 +135,7 @@ struct UnraidAuthorization: Identifiable {
         guard (error as NSError).code != NSURLErrorCancelled, !completed else { return }
         loading = false
         // Do not echo failing URLs: an authorization URL can contain a key.
-        self.error = "Could not load the secure sign-in page. Check connectivity and the server certificate, or use Safari."
+        self.error = "Could not load the secure sign-in page (code \((error as NSError).code)). Check the private connection, HTTPS port and certificate, then tap Continue to approval."
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if action.targetFrame == nil, let url = action.request.url, url.scheme == "https" { webView.load(action.request) }
@@ -143,16 +145,20 @@ struct UnraidAuthorization: Identifiable {
 
 private struct SignInSurface: UIViewRepresentable {
     let model: UnraidSignInModel
-    func makeUIView(context: Context) -> WKWebView { model.webView }
+    func makeUIView(context: Context) -> WKWebView { model.webView.navigationDelegate = model; model.webView.uiDelegate = model; return model.webView }
     func updateUIView(_ view: WKWebView, context: Context) { }
     static func dismantleUIView(_ view: WKWebView, coordinator: ()) { view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil }
 }
 
 struct UnraidSignInView: View {
     @StateObject private var model: UnraidSignInModel
+    @ObservedObject private var tailnet = TailnetStore.shared
+    @State private var resumeAfterPrivateConnection = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     let receiveKey: (String) -> Void
+    private var privateServer: Bool { TailnetPolicy.contains(model.request.server.host ?? "") }
+    private var needsConnection: Bool { privateServer && !tailnet.running }
     init(request: UnraidAuthorization, receiveKey: @escaping (String) -> Void) {
         _model = StateObject(wrappedValue: UnraidSignInModel(request: request))
         self.receiveKey = receiveKey
@@ -161,23 +167,48 @@ struct UnraidSignInView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Label(model.host, systemImage: "lock.fill").font(.caption).padding(10)
-                if model.loading { ProgressView().padding(8) }
-                SignInSurface(model: model)
-                VStack(alignment: .leading, spacing: 10) {
-                    if let error = model.error { Text(error).foregroundStyle(.orange) }
-                    Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")
-                    Button("Continue to approval") { model.continueToApproval() }
-                    if TailnetStore.shared.enabled && TailnetPolicy.contains(model.request.server.host ?? "") {
-                        Text("Stay in AsterOS to use its private connection. Safari does not share this connection.").foregroundStyle(.secondary)
-                    } else {
-                        Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
-                    }
-                    Text("In Safari, approve access, copy the generated key, then return to AsterOS and paste it. Website logins do not unlock native API requests through Cloudflare or Organizr.").foregroundStyle(.secondary)
-                }.font(.caption).padding().background(DockTheme.card)
+                if needsConnection {
+                    VStack(spacing: 22) {
+                        Spacer()
+                        Image(systemName: "network.badge.shield.half.filled").font(.system(size: 60)).foregroundStyle(.mint)
+                        Text("Connect privately").font(.title.bold())
+                        Text("Enable Tailscale here to reach your server. After you approve AsterOS, your Unraid sign-in will open automatically.")
+                            .multilineTextAlignment(.center).foregroundStyle(.secondary)
+                        Button("Enable Tailscale & sign in") {
+                            resumeAfterPrivateConnection = true
+                            Task {
+                                await tailnet.signIn()
+                                continueWhenConnected()
+                            }
+                        }.buttonStyle(.borderedProminent).controlSize(.large)
+                        Text(tailnet.status).font(.subheadline).foregroundStyle(.secondary)
+                        if let error = tailnet.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                        Spacer()
+                    }.padding(28).frame(maxWidth: .infinity).background(DockTheme.background)
+                } else {
+                    if model.loading { ProgressView().padding(8) }
+                    SignInSurface(model: model)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let error = model.error { Text(error).foregroundStyle(.orange) }
+                        Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")
+                        Button("Continue to approval") { model.continueToApproval() }
+                        if !privateServer {
+                            Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
+                            Text("In Safari, approve access, copy the generated key, then return here and paste it. Website logins do not unlock native API requests through Cloudflare or Organizr.").foregroundStyle(.secondary)
+                        }
+                    }.font(.caption).padding().background(DockTheme.card)
+                }
             }
             .navigationTitle("Sign in to Unraid").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { if needsConnection { resumeAfterPrivateConnection = true } }
+            .onChange(of: tailnet.running) { _, _ in continueWhenConnected() }
             .onChange(of: model.authorizedKey) { _, value in if let value { receiveKey(value); model.authorizedKey = nil } }
         }
+    }
+    private func continueWhenConnected() {
+        guard resumeAfterPrivateConnection, tailnet.running else { return }
+        resumeAfterPrivateConnection = false
+        model.continueToApproval()
     }
 }

@@ -148,7 +148,11 @@ struct ConnectionView: View {
                     Toggle("Manage Docker apps", isOn: $allowDockerManagement)
                     Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Install/remove controls are still in development." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
                     Button {
-                        do { error = nil; authorization = try UnraidAuthorization(address: address, allowDockerManagement: allowDockerManagement) }
+                        do {
+                            error = nil
+                            let request = try UnraidAuthorization(address: address, allowDockerManagement: allowDockerManagement)
+                            authorization = request
+                        }
                         catch { self.error = error.localizedDescription }
                     } label: { Label("Sign in to Unraid", systemImage: "person.badge.key.fill") }
                     .disabled(busy || address.isEmpty)

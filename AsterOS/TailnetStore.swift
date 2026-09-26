@@ -214,7 +214,10 @@ private struct SilentTailnetLogger: LogSink {
         return [blocked]
     }
     func prepare(for host: String?) async throws -> [ProxyConfiguration] {
-        guard enabled else { return [] }
+        guard enabled else {
+            if let host, TailnetPolicy.contains(host) { throw AppError.message("Connect with Tailscale in AsterOS first, then sign in to Unraid.") }
+            return []
+        }
         await launch()
         guard let host, TailnetPolicy.contains(host) else { return proxies }
         guard running else { throw AppError.message("Open Private connection and finish Tailscale sign-in or device approval first.") }
@@ -274,7 +277,10 @@ struct TailnetSetupView: View {
                 Text("This preview routes Tailscale addresses and full .ts.net names. Use a trusted HTTPS certificate on your Unraid server. LAN subnet routes and exit nodes are not enabled.")
             }.font(.caption).foregroundStyle(.secondary)
         }.navigationTitle("Private connection")
-        .task { await tailnet.launch() }
+        .task {
+            if let existingPort = URL(string: address)?.port { port = String(existingPort) }
+            await tailnet.launch()
+        }
         .confirmationDialog("Sign out of this AsterOS connection?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { Task { await tailnet.signOut() } }
         } message: { Text("Private server access in AsterOS will stop. Other devices on your tailnet are unaffected.") }
