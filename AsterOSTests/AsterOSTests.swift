@@ -67,4 +67,12 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(message.contains("private-secret"))
         XCTAssertFalse(message.contains("api_key=secret"))
     }
+    func testLoginLandingResumesOnlyOnSelectedServer() throws {
+        let request = try UnraidAuthorization(address: "https://server.test:8443", allowDockerControl: false)
+        XCTAssertTrue(request.isPostLoginLanding(URL(string: "https://server.test:8443/Main")!))
+        XCTAssertTrue(request.isPostLoginLanding(URL(string: "https://server.test:8443/Dashboard")!))
+        for value in ["https://other.test:8443/Main", "https://server.test/Main", "http://server.test:8443/Main", "https://server.test:8443/login", "https://server.test:8443/ApiKeyAuthorize"] {
+            XCTAssertFalse(request.isPostLoginLanding(URL(string: value)!))
+        }
+    }
 }

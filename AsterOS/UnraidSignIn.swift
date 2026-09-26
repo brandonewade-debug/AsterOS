@@ -33,6 +33,13 @@ struct UnraidAuthorization: Identifiable {
         && (url.port ?? 443) == (callback.port ?? 443) && url.path == callback.path
         && url.user == nil && url.password == nil
     }
+    func isPostLoginLanding(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", url.host?.lowercased() == server.host?.lowercased(),
+              (url.port ?? 443) == (server.port ?? 443), url.user == nil, url.password == nil else { return false }
+        let base = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let prefix = base.isEmpty ? "" : "/" + base
+        return [prefix + "/Main", prefix + "/Dashboard"].contains(url.path)
+    }
     func key(from url: URL, now: Date = Date()) throws -> String {
         guard isCallback(url), url.fragment == nil, now.timeIntervalSince(created) < 600 else {
             throw AppError.message("The sign-in response is invalid or expired. Please try again.")
@@ -57,6 +64,7 @@ struct UnraidAuthorization: Identifiable {
     @Published var host: String
     @Published var authorizedKey: String?
     private var completed = false
+    private var resumedAfterLogin = false
     init(request: UnraidAuthorization) {
         self.request = request
         host = request.server.host ?? "Unraid"
@@ -88,7 +96,20 @@ struct UnraidAuthorization: Identifiable {
         decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { host = webView.url?.host ?? request.server.host ?? "Unraid" }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loading = false
+        // Some Unraid versions discard the original URL during password login.
+        // Resume once in the same WebKit session, which now holds the login cookie.
+        if !completed, !resumedAfterLogin, let url = webView.url, request.isPostLoginLanding(url) {
+            resumedAfterLogin = true
+            continueToApproval()
+        }
+    }
+    func continueToApproval() {
+        guard !completed else { return }
+        error = nil; loading = true
+        webView.load(URLRequest(url: request.authorizationURL()))
+    }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
     private func failed(_ error: Error) {
@@ -128,6 +149,7 @@ struct UnraidSignInView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if let error = model.error { Text(error).foregroundStyle(.orange) }
                     Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")
+                    Button("Continue to approval") { model.continueToApproval() }.disabled(model.loading)
                     Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
                     Text("In Safari, approve access, copy the generated key, then return to AsterOS and paste it. Website logins do not unlock native API requests through Cloudflare or Organizr.").foregroundStyle(.secondary)
                 }.font(.caption).padding().background(DockTheme.card)

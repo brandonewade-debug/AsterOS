@@ -42,3 +42,7 @@ The deployment uses a dedicated AsterOS storage folder, 10 GiB free-space reserv
 Xcode 26.6 built the updated app and all seven XCTest checks passed on iPhone 17 Pro / iOS 26.5. New tests cover callback origin/port/state/expiry, duplicate parameters, read-only default scopes, manual Safari fallback URLs, and redaction of sensitive redirect URL data. The approved AsterOS emblem is included in the asset catalog as the 1024-pixel iOS app icon and onboarding brand mark.
 
 The development Mac reached the server directly over LAN HTTPS with a trusted certificate and received a GraphQL authentication response. The public domain's 302 was traced to Organizr middleware in Nginx. Interactive Unraid sign-in, automatic callback delivery, and authenticated dashboard loading still need the owner's end-to-end test; no API key or password was extracted from the screenshot. Cloudflare and Organizr policies were not changed.
+
+### Post-login return correction
+
+The owner confirmed password sign-in succeeds but Unraid 7.2.2 lands on Main, discarding the authorization request. The app now resumes consent once after a same-origin Main/Dashboard landing and includes Continue to approval. All eight XCTest checks passed on the development simulator, including the landing-origin regression test. Full approval-to-dashboard completion remains an owner test.
