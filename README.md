@@ -9,7 +9,7 @@ A native iPhone and iPad companion for Unraid, by Asterline Labs. Development fo
 3. Choose **Explore demo**, or enter your server's HTTPS address and choose **Sign in to Unraid**. Approve AsterOS to return the app credential automatically. Manual key entry is an optional fallback.
 4. For a physical device, set your signing team and a unique bundle identifier in the app target. The current identifier `com.asterlinelabs.asteros` is provisional; it is not registered by this project.
 
-Requires iOS/iPadOS 17+. Direct file access uses the MIT-licensed SMBClient package pinned to revision 66eafaa6d17e034e8036dee4b3ebc1b52cb53919; its notice is bundled in the app. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. The companion Files integration also compiled successfully and passed the same four checks. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
+Requires iOS/iPadOS 17+, Xcode, and Go (tested with 1.27.1; install via `brew install go`). Native VPN uses a vendored official WireGuardKit revision with documented build-compatibility fixes. Direct file access uses the MIT-licensed SMBClient package pinned to revision 66eafaa6d17e034e8036dee4b3ebc1b52cb53919; its notice is bundled in the app. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. The companion Files integration also compiled successfully and passed the same four checks. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
 
 ### Simulator signing
 
@@ -58,3 +58,12 @@ The current API schema was inspected as a reference, but features differ by inst
 The project belongs in the private `brandonewade-debug/AsterOS` repository. Open `AsterOS.xcodeproj` from the development branch to work on the foundation. Do not add server keys, certificates or signing keys. No code license is granted in this starter; choose the commercial licensing policy before making the repository public.
 
 See `docs/PRODUCT.md` for the implementation roadmap and `docs/VALIDATION.md` for the validation status and release gates.
+
+
+## Native VPN preview
+
+Settings → AsterOS VPN imports a dedicated WireGuard client `.conf` profile and creates an app-owned iOS Packet Tunnel configuration. On successful setup, connect-on-launch is enabled; switching apps or locking the device does not disconnect. Use Disconnect explicitly. This replaces the prior Shortcuts setup guide.
+
+Only private split-tunnel routes and one server peer are accepted. Full-tunnel routes, DNS overrides, wg-quick command hooks and unknown fields are rejected. The configuration is stored in shared Keychain; system preferences contain only its persistent reference. Import never logs keys. The imported file itself contains secrets and must be protected.
+
+A real tunnel requires a physical iPhone/iPad, Apple development provisioning for both bundle identifiers and a configured, externally reachable WireGuard UDP endpoint on Unraid. A VPN profile cannot reuse a Tailscale peer or HTTPS/Cloudflare URL. The simulator disables profile installation and connection operations explicitly. See [native VPN setup](docs/NATIVE_VPN.md).

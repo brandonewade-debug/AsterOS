@@ -66,3 +66,14 @@ The owner completed Unraid login, approval, and the authenticated overview reque
 - Live authenticated file transfers and on-device VPN automation have NOT been validated; a user share account and physical iPhone are required. This is a development preview.
 - Settings → VPN automation describes Tailscale Connect/Disconnect personal automations and opens Shortcuts. It does not install automations, imply VPN state, or control another app’s tunnel. Switching away triggers the close automation and can interrupt transfers or other apps using Tailscale.
 - Cloudflare tunnel idea cancelled by user before any Cloudflare changes.
+
+
+## Native VPN — 2026-09-26
+
+- Complete signed simulator app + embedded VPN extension built and 14 XCTest checks passed. Native split-route parser tests cover valid import, public/default routes, invalid prefixes, duplicate settings, command hooks, extra peers, DNS overrides and sanitized errors. Existing API/Keychain checks still pass.
+- Generic physical iOS app + Packet Tunnel extension code build succeeded with signing disabled. This verifies device compilation, not tunnel operation.
+- Development signing attempted with team FXN5ZF63XW. Apple refused provisioning because the team has no registered devices. `devicectl` found no connected physical devices. No physical installation or VPN handshake is claimed.
+- Updated simulator app installed and launched. VPN operations are explicitly unavailable in the simulator.
+- Private configuration uses a shared Keychain persistent reference. No raw config in defaults, preferences, logs or source. Files are capped at 64 KiB.
+- The server has no active/populated WireGuard tunnel. Its network configuration was not changed. Peer setup and endpoint reachability remain required.
+- Earlier Tailscale connect/disconnect automation guide is superseded by native VPN controls. Backgrounding never triggers a disconnect.

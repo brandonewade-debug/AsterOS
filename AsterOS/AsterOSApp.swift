@@ -2,7 +2,8 @@ import SwiftUI
 
 @main struct AsterOSApp: App {
     @StateObject private var store = AppStore()
-    var body: some Scene { WindowGroup { RootView().environmentObject(store).tint(.mint) } }
+    @StateObject private var vpn = VPNStore()
+    var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).tint(.mint) } }
 }
 enum DockTheme {
     static let background = Color(red: 0.055, green: 0.065, blue: 0.08)
@@ -17,6 +18,7 @@ struct Panel<Content: View>: View {
     }
 }
 struct RootView: View {
+    @EnvironmentObject var vpn: VPNStore
     @EnvironmentObject var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var setup = false
@@ -29,6 +31,7 @@ struct RootView: View {
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .preferredColorScheme(.dark)
+        .task { await vpn.launch() }
         .sheet(isPresented: $setup) { ConnectionView() }
         .onAppear { if store.selected == nil && !store.demo { setup = true } }
         .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)") {
@@ -343,7 +346,7 @@ struct SettingsView: View {
                     if store.selected != nil { Button("Remove selected server", role: .destructive) { removing = true } }
                 }
                 Section("Remote access") {
-                    NavigationLink { VPNSetupView() } label: { Label("VPN automation", systemImage: "network.badge.shield.half.filled") }
+                    NavigationLink { VPNSetupView() } label: { Label("AsterOS VPN", systemImage: "network.badge.shield.half.filled") }
                 }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)

@@ -2,6 +2,29 @@ import XCTest
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    private func vpnConfig(routes: String = "192.168.1.209/32") -> String {
+        let key = Data(repeating: 42, count: 32).base64EncodedString()
+        return "[Interface]\nPrivateKey = \(key)\nAddress = 10.253.0.2/32\n[Peer]\nPublicKey = \(key)\nEndpoint = vpn.example.test:51820\nAllowedIPs = \(routes)\nPersistentKeepalive = 25"
+    }
+    func testVPNImportAcceptsPrivateSplitRoutes() throws {
+        let parsed = try VPNConfiguration.parse(vpnConfig(routes: "192.168.1.209/32, 10.253.0.1/32"))
+        XCTAssertEqual(parsed.peers.count, 1)
+        XCTAssertEqual(parsed.peers[0].allowedIPs.count, 2)
+        XCTAssertEqual(parsed.peers[0].endpoint?.stringRepresentation, "vpn.example.test:51820")
+    }
+    func testVPNImportRejectsBroadAndMalformedRoutes() {
+        for route in ["0.0.0.0/0", "0.0.0.0/1, 128.0.0.0/1", "192.168.1.0/8", "8.8.8.8/32", "192.168.1.1/33", "::/0", "192.168.1.1"] {
+            XCTAssertThrowsError(try VPNConfiguration.parse(vpnConfig(routes: route)), route)
+        }
+    }
+    func testVPNImportRejectsHooksDuplicateKeysAndMultiplePeersWithoutLeakingKeys() {
+        for config in [vpnConfig() + "\nPostUp = arbitrary-command", vpnConfig() + "\nAllowedIPs = 10.0.0.0/8", vpnConfig() + "\n[Peer]", vpnConfig().replacingOccurrences(of: "Address =", with: "DNS = 1.1.1.1\nAddress =")] {
+            XCTAssertThrowsError(try VPNConfiguration.parse(config)) { error in
+                XCTAssertFalse(error.localizedDescription.contains(Data(repeating: 42, count: 32).base64EncodedString()))
+            }
+        }
+    }
+
     func testShareAddressCannotEmbedCredentialsOrRedirectToWeb() throws {
         XCTAssertEqual(try SharePolicy.host(" tower.local "), "tower.local")
         XCTAssertEqual(try SharePolicy.host("smb://192.168.1.20/"), "192.168.1.20")
