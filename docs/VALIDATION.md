@@ -6,6 +6,12 @@ Linux; no Swift compiler, Xcode, iOS SDK, simulator, Apple signing credentials o
 
 Source review checks include: HTTPS-only saved addresses; user-info/query/fragment rejection; Keychain-only API key storage; rejecting API redirects; no API key injection into WebKit; capacities use kilobytes rather than disk counts; generation guards against a previous server's async results populating a new profile; sample mode disables writes.
 
+## First CI attempt
+
+The GitHub Actions job for commit `dfe1fb839edd978131d6f1b5747ed76fe29bf715` failed before any job steps were reported. The job-log endpoint returned no available log. The reason is unconfirmed; no compiler or XCTest outcome is available. Inspect the workflow annotation in GitHub before retrying.
+
+Run: https://github.com/brandonewade-debug/AsterOS/actions/runs/36259461034
+
 ## Before internal TestFlight
 
 - Run the included GitHub Actions workflow or Xcode Product → Test; resolve compiler/test failures.
