@@ -6,15 +6,29 @@ A native iPhone and iPad companion for Unraid, by Asterline Labs. Development fo
 
 1. Open `AsterOS.xcodeproj` on a Mac with Xcode 16 or newer.
 2. Select the AsterOS scheme and an iPhone simulator, then Run.
-3. Choose **Explore demo**, or supply your server's HTTPS address and Unraid API key.
+3. Choose **Explore demo**, or enter your server's HTTPS address and choose **Sign in to Unraid**. Approve AsterOS to return the app credential automatically. Manual key entry is an optional fallback.
 4. For a physical device, set your signing team and a unique bundle identifier in the app target. The current identifier `com.asterlinelabs.asteros` is provisional; it is not registered by this project.
 
 Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. The companion Files integration also compiled successfully and passed the same four checks. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
+
+### Simulator signing
+
+Keep signing enabled when building for the simulator. Disabling it produces an app without the application-identifier entitlement and Keychain writes fail with error `-34018`. Ad-hoc simulator signing does not require a distribution certificate:
+
+```sh
+xcodebuild test -project AsterOS.xcodeproj -scheme AsterOS \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+```
+
+Choose an installed simulator name. The hosted Keychain regression test saves, reads, updates, and removes only a randomly identified test credential. All nine XCTest checks passed locally with signing enabled.
 
 ## Implemented source
 
 - Dark SwiftUI layout inspired by the supplied reference screenshots, with native tabs, adaptive cards, and app launcher.
 - Multiple saved server profiles; direct HTTPS URL and manually supplied Unraid Connect remote URL.
+- Unraid login and permission approval with automatic API-key capture, validated callback, and optional manual Safari fallback.
+- Approved AsterOS logo and iOS app icon.
 - Connection validation before saving. API keys in device-only Keychain; credentials are not stored in preferences.
 - GraphQL overview: hostname, OS release, processor, array capacity and data disk temperatures/status.
 - Optional CPU/memory utilization; errors isolated from the overview.

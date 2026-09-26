@@ -50,3 +50,7 @@ The owner confirmed password sign-in succeeds but Unraid 7.2.2 lands on Main, di
 ### Docker management authorization
 
 At the owner's request, Manage Docker is selected in onboarding and adds explicit Docker read/create/update/delete scopes to Viewer monitoring. Full administrator access is not requested. Turning the switch off requests Viewer alone. Existing issued keys are unchanged. Native container installation/removal controls remain unimplemented. The scope assertion and all eight XCTest checks passed. Main-page authorization resumption now triggers at navigation commit instead of waiting for streamed resources to finish; the manual Continue button stays available during loading.
+
+## Simulator Keychain fix, 2026-09-26
+
+The owner completed Unraid login, approval, and the authenticated overview request, but saving failed. Simulator securityd reported AsterOS SecItemAdd error -34018: missing application-identifier/keychain-access-groups entitlements. A new hosted Keychain round-trip test reproduced this with CODE_SIGNING_ALLOWED=NO. Rebuilding with CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- supplied the simulator signing identity and all nine tests passed, including save/read/update/delete. CI now uses the same signing flags. No plaintext credential fallback was introduced. The correctly signed build was installed into the development simulator; the owner's final connection retry remains to be observed.

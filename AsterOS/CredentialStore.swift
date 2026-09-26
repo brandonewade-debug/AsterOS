@@ -7,6 +7,15 @@ enum CredentialStore {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service, kSecAttrAccount as String: id.uuidString]
     }
+    private static func failure(_ operation: String, status: OSStatus) -> AppError {
+        if status == errSecMissingEntitlement {
+            return .message("This build is missing its Keychain signing entitlement. Install a correctly signed AsterOS build, then retry saving the connection. (\(status))")
+        }
+        if status == errSecInteractionNotAllowed {
+            return .message("Keychain is locked. Unlock this device and try again. (\(status))")
+        }
+        return .message("Unable to \(operation) the credential securely. Keychain error \(status).")
+    }
     static func save(_ key: String, for id: UUID) throws {
         var item = lookup(id)
         item[kSecValueData as String] = Data(key.utf8)
@@ -14,8 +23,8 @@ enum CredentialStore {
         let status = SecItemAdd(item as CFDictionary, nil)
         if status == errSecDuplicateItem {
             let result = SecItemUpdate(lookup(id) as CFDictionary, [kSecValueData as String: Data(key.utf8)] as CFDictionary)
-            guard result == errSecSuccess else { throw AppError.message("Unable to update the API key securely.") }
-        } else if status != errSecSuccess { throw AppError.message("Unable to save the API key securely.") }
+            guard result == errSecSuccess else { throw failure("update", status: result) }
+        } else if status != errSecSuccess { throw failure("save", status: status) }
     }
     static func read(_ id: UUID) throws -> String {
         var item = lookup(id)
@@ -30,6 +39,6 @@ enum CredentialStore {
     }
     static func remove(_ id: UUID) throws {
         let status = SecItemDelete(lookup(id) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw AppError.message("Unable to remove the API key.") }
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw failure("remove", status: status) }
     }
 }

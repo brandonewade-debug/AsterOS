@@ -77,4 +77,14 @@ final class AsterOSTests: XCTestCase {
             XCTAssertFalse(request.isPostLoginLanding(URL(string: value)!))
         }
     }
+    func testKeychainCanSaveReadUpdateAndRemoveCredential() throws {
+        let id = UUID()
+        defer { try? CredentialStore.remove(id) }
+        try CredentialStore.save("asteros-test-value", for: id)
+        XCTAssertEqual(try CredentialStore.read(id), "asteros-test-value")
+        try CredentialStore.save("asteros-updated-test-value", for: id)
+        XCTAssertEqual(try CredentialStore.read(id), "asteros-updated-test-value")
+        try CredentialStore.remove(id)
+        XCTAssertThrowsError(try CredentialStore.read(id))
+    }
 }
