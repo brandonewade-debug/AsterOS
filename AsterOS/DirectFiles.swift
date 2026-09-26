@@ -251,7 +251,8 @@ struct FilesView: View {
         } else {
             NavigationStack {
                 ContentUnavailableView("Connect a server", systemImage: "folder", description: Text("Add your Unraid server to browse its shares directly. No companion download is required."))
-                    .navigationTitle("Files")
+                    .background { AsterBackdrop() }
+            .navigationTitle("Files")
             }
         }
     }
@@ -305,7 +306,7 @@ struct DirectFilesView: View {
                                     Button { Task { await store.open(entry) } } label: {
                                         VStack(spacing: 10) {
                                             Image(systemName: entry.directory ? "folder.fill" : "doc.fill")
-                                                .font(.system(size: 64)).foregroundStyle(entry.directory ? .orange : .mint)
+                                                .font(.system(size: 58, weight: .light)).foregroundStyle(entry.directory ? Color.orange.gradient : Color.mint.gradient).shadow(color: .black.opacity(0.15), radius: 10, y: 5)
                                                 .frame(height: 76)
                                             Text(entry.name).font(.subheadline).foregroundStyle(.primary).lineLimit(2)
                                             if !entry.directory {
@@ -321,6 +322,7 @@ struct DirectFilesView: View {
                     }.refreshable { await store.refresh() }.searchable(text: $search, prompt: "Search this folder")
                 }
             }
+            .background { AsterBackdrop() }
             .navigationTitle("Files")
             .toolbar {
                 Menu {
@@ -367,7 +369,7 @@ struct ShareConnectionView: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section("Server") {
                     TextField("Hostname or IP address", text: $host).keyboardType(.URL)
                     Text("Use the server’s full Tailscale name or IP for the AsterOS private connection, or its LAN address on Wi-Fi.").font(.caption).foregroundStyle(.secondary)

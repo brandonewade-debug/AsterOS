@@ -240,7 +240,7 @@ struct TailnetSetupView: View {
     @State private var chosen: String?
     @State private var confirmSignOut = false
     var body: some View {
-        Form {
+        GlassForm {
             Section {
                 Label("Your server, privately", systemImage: "network.badge.shield.half.filled").font(.title2.bold())
                 Text("Sign in to your existing Tailscale network. AsterOS connects itself—no separate VPN app or companion is needed.")

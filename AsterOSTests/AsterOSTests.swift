@@ -78,6 +78,30 @@ final class AsterOSTests: XCTestCase {
         XCTAssertNil(container.webAddress(server: URL(string: "https://tower")))
     }
 
+    @MainActor func testAppFoldersPersistAndStaySeparatePerServer() throws {
+        let suite = "AsterOS-tests-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = UUID(), other = UUID()
+        let store = AppFoldersStore(defaults: defaults)
+        store.load(serverID: server)
+        let media = try XCTUnwrap(store.create("Media", app: "container:plex"))
+        let tools = try XCTUnwrap(store.create("Tools"))
+        store.move("container:plex", to: tools)
+        XCTAssertTrue(store.layout.folders.first { $0.id == media }!.members.isEmpty)
+        let reloaded = AppFoldersStore(defaults: defaults)
+        reloaded.load(serverID: server)
+        XCTAssertEqual(reloaded.folder(for: "container:plex"), tools)
+        reloaded.rename(tools, name: "Utilities")
+        reloaded.load(serverID: other)
+        XCTAssertTrue(reloaded.layout.folders.isEmpty)
+        reloaded.load(serverID: server)
+        XCTAssertEqual(reloaded.layout.folders.last?.name, "Utilities")
+        reloaded.remove(tools)
+        XCTAssertNil(reloaded.folder(for: "container:plex"))
+        XCTAssertEqual(reloaded.layout.folders.count, 1)
+    }
+
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
         let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
         XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))
