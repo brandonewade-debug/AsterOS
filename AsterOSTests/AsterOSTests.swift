@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
@@ -119,6 +120,42 @@ final class AsterOSTests: XCTestCase {
             XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: value)!, catalog: catalog, sawLogin: true))
         }
         XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: false))
+    }
+
+    @MainActor func testNativeCatalogReadsDockerCardsWithoutLoginDataOrInstalling() async throws {
+        let loaded = expectation(description: "Catalog fixture loaded")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero)
+        web.navigationDelegate = delegate
+        web.loadHTMLString(#"""
+        <input type="password" value="never-export-this">
+        <div class="ca_holder" data-apppath="/templates/media.xml" data-appname="Media &amp; Photos" data-repository="Example Repo">
+          <span class="appDocker"></span><div class="ca_author">Example Author</div>
+          <div class="cardCategory">MediaServer</div><div class="cardDesc">Organize photos &amp; video.</div>
+          <div class="infoButton" onclick="window.reviewed = true">Info</div>
+          <button onclick="window.installed = true">Install</button>
+        </div>
+        <div class="ca_holder" data-apppath="/plugins/extra" data-appname="Plugin"><span class="appPlugin"></span></div>
+        <a class="pageRight" onclick="window.nextPage = true">Next</a><span class="pageLeft pageNavNoClick"></span>
+        <script>var data = {searchInProgress: false}; window.installed = false; window.reviewed = false;</script>
+        """#, baseURL: URL(string: "https://catalog.invalid/Apps"))
+        await fulfillment(of: [loaded], timeout: 10)
+        let result = try await web.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page)
+        let json = try XCTUnwrap(result as? String)
+        XCTAssertFalse(json.contains("never-export-this"))
+        let page = try JSONDecoder().decode(NativeCatalogPage.self, from: Data(json.utf8))
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items.first?.name, "Media & Photos")
+        XCTAssertEqual(page.items.first?.author, "Example Author")
+        XCTAssertTrue(page.next); XCTAssertFalse(page.previous)
+        XCTAssertTrue(page.ready); XCTAssertFalse(page.busy)
+        _ = try await web.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": page.items[0].id], in: nil, contentWorld: .page)
+        let reviewed = try await web.evaluateJavaScript("window.reviewed") as? Bool
+        let installed = try await web.evaluateJavaScript("window.installed") as? Bool
+        XCTAssertEqual(reviewed, true); XCTAssertEqual(installed, false)
+        let stale = try await web.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": "missing"], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(stale, false)
+        web.navigationDelegate = nil
     }
 
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
@@ -247,4 +284,10 @@ final class AsterOSTests: XCTestCase {
         try CredentialStore.remove(id)
         XCTAssertThrowsError(try CredentialStore.read(id))
     }
+}
+
+@MainActor private final class CatalogFixtureLoader: NSObject, WKNavigationDelegate {
+    let loaded: XCTestExpectation
+    init(_ loaded: XCTestExpectation) { self.loaded = loaded }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded.fulfill() }
 }
