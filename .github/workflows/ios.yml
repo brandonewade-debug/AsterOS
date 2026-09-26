@@ -12,14 +12,18 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - name: Install WireGuard build toolchain
+      - name: Install embedded Tailscale build toolchain
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.1'
+          go-version: '1.25.5'
           cache: false
+      - name: Build pinned private-network dependencies
+        run: |
+          bash scripts/bootstrap_tailnet.sh
+          python3 scripts/generate_project.py
       - name: Select an available iPhone simulator
         run: |
           xcodebuild -version
