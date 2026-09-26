@@ -134,9 +134,8 @@ struct ConnectionView: View {
                     TextField("Server name", text: $name)
                     Picker("Method", selection: $kind) { ForEach(ConnectionKind.allCases) { Text($0.rawValue).tag($0) } }
                     TextField("https://server.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Unraid API key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("Connection") } footer: {
-                    Text("Create an API key in Unraid Settings → Management Access → API. Use read access for system, array and Docker; Docker start/stop additionally needs update permission. Keys are stored in this device’s Keychain.")
+                    Text("Enter your server address, then sign in below. No API key needs to be copied.")
                 }
                 Section {
                     Toggle("Allow Docker start / stop", isOn: $allowDockerControl)
@@ -145,16 +144,18 @@ struct ConnectionView: View {
                         catch { self.error = error.localizedDescription }
                     } label: { Label("Sign in to Unraid", systemImage: "person.badge.key.fill") }
                     .disabled(busy || address.isEmpty)
+                    if busy { ProgressView("Verifying your connection…") }
                 } header: { Text("Connect through your server") } footer: {
-                    Text("Sign in and approve access to create a key automatically. Use a directly reachable HTTPS server address. Cloudflare Access and Organizr are separate website login layers; use a local/VPN address if they block the API.")
+                    Text("Sign in → approve AsterOS → connected. Your app credential is created automatically and stored in Keychain. Website protection such as Cloudflare Access or Organizr still requires a compatible connection route.")
                 }
                 if kind == .connect { Section { Text("Use the server URL from Connect’s Manage link. This does not sign into your Unraid.net account or route Docker apps through Connect.") } }
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section {
-                    Button {
-                        testConnection()
-                    } label: { HStack { Text("Test & save connection"); Spacer(); if busy { ProgressView() } } }
-                    .disabled(busy || address.isEmpty || key.isEmpty)
+                    DisclosureGroup("Use an existing API key") {
+                        SecureField("Unraid API key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Text("Optional fallback for an existing key. Sign-in above creates and saves one for you.").font(.caption).foregroundStyle(.secondary)
+                        Button("Test & save key") { testConnection() }.disabled(busy || address.isEmpty || key.isEmpty)
+                    }
                     Button("Explore demo") { store.showDemo(); dismiss() }.disabled(busy)
                 }
             }.navigationTitle("Connect your server")
