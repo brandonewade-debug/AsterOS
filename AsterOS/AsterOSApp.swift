@@ -127,6 +127,7 @@ struct ConnectionView: View {
     @State private var key = ""
     @State private var kind: ConnectionKind = .custom
     @State private var authorization: UnraidAuthorization?
+    @State private var connectionID = UUID()
     @State private var allowDockerManagement = true
     @State private var busy = false
     @State private var error: String?
@@ -156,7 +157,7 @@ struct ConnectionView: View {
                     Button {
                         do {
                             error = nil
-                            let request = try UnraidAuthorization(address: address, allowDockerManagement: allowDockerManagement)
+                            let request = try UnraidAuthorization(address: address, allowDockerManagement: allowDockerManagement, profileID: connectionID)
                             authorization = request
                         }
                         catch { self.error = error.localizedDescription }
@@ -164,7 +165,7 @@ struct ConnectionView: View {
                     .disabled(busy || address.isEmpty)
                     if busy { ProgressView("Verifying your connection…") }
                 } header: { Text("Connect through your server") } footer: {
-                    Text("Sign in → approve AsterOS → connected. Your app credential is created automatically and stored in Keychain. Website protection such as Cloudflare Access or Organizr still requires a compatible connection route.")
+                    Text("Sign in → approve AsterOS → connected. Your app credential is stored in Keychain, and your server login is remembered for the App Store. Website protection such as Cloudflare Access or Organizr still requires a compatible connection route.")
                 }
                 if kind == .connect { Section { Text("Use the server URL from Connect’s Manage link. This does not sign into your Unraid.net account or route Docker apps through Connect.") } }
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
@@ -190,7 +191,7 @@ struct ConnectionView: View {
         busy = true; error = nil
         Task {
             defer { busy = false }
-            do { try await store.connect(name: name, address: address, key: key, kind: kind); key = ""; dismiss() }
+            do { try await store.connect(name: name, address: address, key: key, kind: kind, profileID: connectionID); key = ""; dismiss() }
             catch { self.error = error.localizedDescription }
         }
     }

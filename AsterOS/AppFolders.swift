@@ -57,11 +57,17 @@ struct AppLaunchItem: Identifiable {
     var id: String { container.map { "container:" + $0.name.lowercased() } ?? "shortcut:" + (shortcut?.id.uuidString ?? "") }
     var name: String { container?.name ?? shortcut?.name ?? "App" }
 }
+struct CatalogPresentation: Identifiable {
+    let server: ServerProfile
+    let model: CatalogBrowserModel
+    var id: UUID { server.id }
+}
 struct AppsView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var folders = AppFoldersStore()
     @State private var adding = false
-    @State private var showingStore = false
+    @State private var catalogPresentation: CatalogPresentation?
+    @State private var catalogServerID: UUID?
     @State private var removal: ContainerRemovalTarget?
     @State private var catalogModel: CatalogBrowserModel?
     @State private var opened: SavedApp?
@@ -82,8 +88,13 @@ struct AppsView: View {
     }
     private func openStore() {
         guard let server = store.selected, !store.demo else { return }
-        if catalogModel == nil { catalogModel = CatalogBrowserModel(server: server.address) }
-        showingStore = true
+        if catalogServerID != server.id || catalogModel?.catalog != CatalogPolicy.url(server: server.address) {
+            catalogModel?.stopCatalogObservation(); catalogModel?.stop()
+            catalogModel = CatalogBrowserModel(server: server.address, serverID: server.id)
+            catalogServerID = server.id
+        }
+        guard let catalogModel else { return }
+        catalogPresentation = CatalogPresentation(server: server, model: catalogModel)
     }
     private func launch(_ item: AppLaunchItem) {
         guard !store.demo else { details = item.container; return }
@@ -216,12 +227,14 @@ struct AppsView: View {
                 }
             } message: { Text("Stopping an app interrupts its active connections and work.") }
             .refreshable { await store.refresh() }
-            .fullScreenCover(isPresented: $showingStore, onDismiss: { Task { await store.refresh() } }) {
-                if let server = store.selected, let catalogModel { NativeAppStoreView(server: server, model: catalogModel) }
+            .fullScreenCover(item: $catalogPresentation, onDismiss: { Task { await store.refresh() } }) { presentation in
+                NativeAppStoreView(server: presentation.server, model: presentation.model)
             }
             .task(id: store.selectedID) {
                 openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID)
-                showingStore = false; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil
+                if catalogServerID != store.selectedID || store.demo {
+                    catalogPresentation = nil; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil; catalogServerID = nil
+                }
             }
         }
     }

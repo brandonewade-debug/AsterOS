@@ -3,6 +3,29 @@ import WebKit
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    @MainActor func testCatalogSessionSurvivesModelRecreationAndIsIsolated() async throws {
+        let firstID = UUID(), otherID = UUID()
+        let url = URL(string: "https://catalog-session.example")!
+        let authorization = try UnraidAuthorization(address: url.absoluteString, allowDockerManagement: true, profileID: firstID)
+        let loginStore = CatalogSession.dataStore(serverID: authorization.profileID)
+        let first = CatalogBrowserModel(server: url, serverID: firstID)
+        XCTAssertEqual(loginStore.identifier, first.webView.configuration.websiteDataStore.identifier)
+        XCTAssertNil(first.webView.url, "Present the native screen before starting network requests")
+        XCTAssertTrue(first.webView.configuration.websiteDataStore.isPersistent)
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "catalog-session.example", .path: "/", .name: "test-session", .value: "test-only", .secure: "TRUE", .expires: Date().addingTimeInterval(3600)]))
+        await loginStore.httpCookieStore.setCookie(cookie)
+        let reopened = CatalogBrowserModel(server: url, serverID: firstID)
+        let cookies = await reopened.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        XCTAssertTrue(cookies.contains { $0.name == "test-session" && $0.value == "test-only" })
+        let other = CatalogBrowserModel(server: url, serverID: otherID)
+        let isolated = await other.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        XCTAssertFalse(isolated.contains { $0.name == "test-session" })
+        await first.webView.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        let cleared = await reopened.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        XCTAssertFalse(cleared.contains { $0.name == "test-session" })
+        CatalogSession.forget(serverID: otherID)
+    }
+
     func testPhotoFoldersAreReadableStableAndPathSafe() throws {
         let date = ISO8601DateFormatter().date(from: "2026-09-26T16:31:00Z")!
         let zone = TimeZone(secondsFromGMT: 0)!

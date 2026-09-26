@@ -37,11 +37,12 @@ import SwiftUI
         select(nil); demo = true; overview = .demo; metrics = .demo
         containers = [Container(id: "demo", names: ["Example app"], state: "RUNNING", status: "Sample data")]
     }
-    func connect(name: String, address: String, key: String, kind: ConnectionKind) async throws {
+    func connect(name: String, address: String, key: String, kind: ConnectionKind, profileID: UUID = UUID()) async throws {
+        guard !profiles.contains(where: { $0.id == profileID }) else { throw AppError.message("This connection is already saved.") }
         let url = try AddressPolicy.validate(address)
         let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !secret.isEmpty else { throw AppError.message("Enter an API key generated on your Unraid server.") }
-        let profile = ServerProfile(name: name.isEmpty ? (url.host ?? "Unraid") : name, address: url, connection: kind)
+        let profile = ServerProfile(id: profileID, name: name.isEmpty ? (url.host ?? "Unraid") : name, address: url, connection: kind)
         let client = UnraidClient(profile: profile, key: secret)
         let result = try await client.overview()
         try CredentialStore.save(secret, for: profile.id)
@@ -51,6 +52,7 @@ import SwiftUI
         guard let id = selectedID else { select(profiles.first?.id); return }
         try DirectFilesStore.forget(serverID: id)
         try CredentialStore.remove(id)
+        CatalogSession.forget(serverID: id)
         profiles.removeAll { $0.id == id }; select(profiles.first?.id)
     }
     func addApp(name: String, address: String, containerID: String? = nil) throws {

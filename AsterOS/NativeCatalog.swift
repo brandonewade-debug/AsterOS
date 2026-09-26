@@ -121,7 +121,7 @@ struct NativeAppStoreView: View {
                             if model.needsCatalogLogin {
                                 ContentUnavailableView {
                                     Label("Connect to the catalog", systemImage: "person.crop.circle")
-                                } description: { Text("Sign in on your Unraid server once to load its Community Applications catalog.") }
+                                } description: { Text("Sign in to load Community Applications. AsterOS remembers this server’s session until it expires or you sign out.") }
                                 Button("Sign in to server") { loginOnly = true; showServer = true }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
                             } else if model.catalogReady {
                                 HStack {
@@ -188,8 +188,8 @@ struct NativeAppStoreView: View {
                     }
                 }
                 .onChange(of: model.catalogReady) { _, ready in if ready && loginOnly { showServer = false; loginOnly = false } }
-                .onAppear { model.startCatalogObservation() }
-                .onDisappear { model.stopCatalogObservation() }
+                .onAppear { model.resumeCatalog() }
+                .onDisappear { model.stopCatalogObservation(); model.stop() }
         }
     }
 }

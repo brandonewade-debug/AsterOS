@@ -59,6 +59,14 @@ enum CatalogPolicy {
         sawLogin && sameOrigin(url, catalog) && ["main", "dashboard"].contains(url.lastPathComponent.lowercased())
     }
 }
+@MainActor enum CatalogSession {
+    static func dataStore(serverID: UUID) -> WKWebsiteDataStore {
+        WKWebsiteDataStore(forIdentifier: serverID)
+    }
+    static func forget(serverID: UUID) {
+        dataStore(serverID: serverID).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { }
+    }
+}
 struct CatalogDialog {
     let message: String
     let host: String
@@ -83,11 +91,12 @@ struct CatalogDialog {
     private var observer: AnyCancellable?
     private var sawLogin = false
     private var timeout: Task<Void, Never>?
-    init(server: URL) {
+    private var connectionTask: Task<Void, Never>?
+    init(server: URL, serverID: UUID) {
         catalog = CatalogPolicy.url(server: server)
         let config = WKWebViewConfiguration()
         // The server owns its login and install forms. No API keys or password scraping.
-        config.websiteDataStore = .nonPersistent()
+        config.websiteDataStore = CatalogSession.dataStore(serverID: serverID)
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         webView.navigationDelegate = self; webView.uiDelegate = self
@@ -95,17 +104,23 @@ struct CatalogDialog {
         observer = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
             self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies
         }
-        openCatalog()
+    }
+    func resumeCatalog() {
+        if webView.url == nil || !onCatalog || (!catalogReady && !webView.isLoading && !needsCatalogLogin) { openCatalog() }
+        startCatalogObservation()
     }
     func openCatalog() {
         error = nil; loading = true; catalogReady = false; catalogItems = []; needsCatalogLogin = false
-        Task { [weak self] in
+        connectionTask?.cancel()
+        connectionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let proxies = try await TailnetStore.shared.prepare(for: catalog.host)
+                try Task.checkCancellation()
                 webView.configuration.websiteDataStore.proxyConfigurations = proxies
                 webView.load(URLRequest(url: catalog))
-            } catch { self.error = error.localizedDescription; self.loading = false }
+            } catch is CancellationError { return }
+            catch { self.error = error.localizedDescription; self.loading = false }
         }
     }
     private var onCatalog: Bool {
@@ -123,7 +138,7 @@ struct CatalogDialog {
     }
     func stopCatalogObservation() { catalogObservation?.cancel(); catalogObservation = nil }
     private func readNativeCatalog() async {
-        guard onCatalog, !webView.isLoading else { return }
+        guard onCatalog else { return }
         do {
             guard let json = try await webView.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as? String,
                   let bytes = json.data(using: .utf8), bytes.count < 4_000_000 else { return }
@@ -132,6 +147,7 @@ struct CatalogDialog {
             catalogBusy = page.busy
             if page.ready && !page.busy {
                 catalogItems = page.items; catalogReady = true; needsCatalogLogin = false
+                loading = false; timeout?.cancel()
                 catalogNext = page.next; catalogPrevious = page.previous
             }
         } catch { /* Server view remains available if the plugin markup has changed. */ }
@@ -158,7 +174,7 @@ struct CatalogDialog {
             if ok != true { error = "This catalog entry changed. Search for it in the server view." }
         } catch { self.error = "Could not open the server's app details." }
     }
-    func stop() { timeout?.cancel(); answerDialog(false); webView.stopLoading(); loading = false }
+    func stop() { connectionTask?.cancel(); timeout?.cancel(); answerDialog(false); webView.stopLoading(); loading = false }
     func answerDialog(_ accepted: Bool) {
         let pending = dialog; dialog = nil; pending?.complete(accepted)
     }
