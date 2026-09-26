@@ -57,10 +57,14 @@ struct AppLaunchItem: Identifiable {
     var id: String { container.map { "container:" + $0.name.lowercased() } ?? "shortcut:" + (shortcut?.id.uuidString ?? "") }
     var name: String { container?.name ?? shortcut?.name ?? "App" }
 }
+enum AppsSection: String, CaseIterable { case installed = "Installed", store = "App Store" }
 struct AppsView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var folders = AppFoldersStore()
     @State private var adding = false
+    @State private var section = AppsSection.installed
+    @State private var removal: ContainerRemovalTarget?
+    @State private var catalogModel: CatalogBrowserModel?
     @State private var opened: SavedApp?
     @State private var pending: Container?
     @State private var details: Container?
@@ -110,6 +114,7 @@ struct AppsView: View {
             }.disabled(store.demo || store.selected == nil)
             if let container = item.container {
                 Button("App details", systemImage: "info.circle") { details = container }
+                Button("Remove container", systemImage: "trash", role: .destructive) { if let serverID = store.selectedID { removal = ContainerRemovalTarget(container: container, serverID: serverID) } }.disabled(store.demo || store.operating)
                 if container.state == "RUNNING" || container.state == "EXITED" {
                     Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating)
                 }
@@ -143,6 +148,17 @@ struct AppsView: View {
     }
     var body: some View {
         NavigationStack {
+            VStack(spacing: 12) {
+                Picker("Apps section", selection: $section) {
+                    ForEach(AppsSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).padding(.horizontal, 24).padding(.top, 8)
+                if section == .store {
+                    if let server = store.selected, !store.demo {
+                        if let catalogModel { UnraidAppStoreView(server: server, model: catalogModel).id(server.id) }
+                        else { ProgressView("Opening App Store…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                    }
+                    else { ContentUnavailableView("Connect your server", systemImage: "bag", description: Text("Connect Unraid to browse and install Community Applications.")) }
+                } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     if store.demo { Text("Demo apps • Sample data").font(.caption).foregroundStyle(.orange) }
@@ -154,9 +170,12 @@ struct AppsView: View {
                     }
                     if !items.isEmpty { Text("Touch and hold an app to organize it.").font(.caption).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 24).padding(.vertical, 26).frame(maxWidth: 900).frame(maxWidth: .infinity)
+            }
+                }
             }.background { AsterBackdrop() }.navigationTitle("Apps")
             .toolbar {
                 Menu {
+                    Button("Install new app", systemImage: "bag.badge.plus") { section = .store }
                     Button("New folder", systemImage: "folder.badge.plus") { prompt() }
                     Button("Add external shortcut", systemImage: "link") { adding = true }
                 } label: { Image(systemName: "plus") }.disabled(store.selected == nil || store.demo).accessibilityLabel("Add folder or shortcut")
@@ -174,6 +193,11 @@ struct AppsView: View {
             }
             .sheet(isPresented: $adding) { AddAppView() }
             .sheet(item: $details) { ContainerDetailsView(container: $0) }
+            .sheet(item: $removal) { target in
+                ContainerRemovalView(container: target.container, serverID: target.serverID) {
+                    if store.selectedID == target.serverID { folders.move("container:" + target.container.name.lowercased(), to: nil) }
+                }
+            }
             .fullScreenCover(item: $opened) { AppBrowser(app: $0) }
             .alert(editingFolder == nil ? "New app folder" : "Rename folder", isPresented: $folderPrompt) {
                 TextField("Folder name", text: $folderName)
@@ -192,7 +216,15 @@ struct AppsView: View {
                 }
             } message: { Text("Stopping an app interrupts its active connections and work.") }
             .refreshable { await store.refresh() }
-            .task(id: store.selectedID) { openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID) }
+            .onChange(of: section) { _, value in
+                if value == .installed { Task { await store.refresh() } }
+                else if catalogModel == nil, let server = store.selected, !store.demo { catalogModel = CatalogBrowserModel(server: server.address) }
+            }
+            .task(id: store.selectedID) {
+                openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID)
+                catalogModel?.stop(); catalogModel = nil
+                if section == .store, let server = store.selected, !store.demo { catalogModel = CatalogBrowserModel(server: server.address) }
+            }
         }
     }
 }

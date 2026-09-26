@@ -102,6 +102,25 @@ final class AsterOSTests: XCTestCase {
         XCTAssertEqual(reloaded.layout.folders.count, 1)
     }
 
+    func testRemovalUsesIDVariableAndPreservesDockerImage() throws {
+        XCTAssertTrue(UnraidClient.removeContainerMutation.contains("removeContainer(id: $id, withImage: false)"))
+        let success = try JSONDecoder().decode(ContainerRemovalData.self, from: Data(#"{"docker":{"removeContainer":true}}"#.utf8))
+        XCTAssertTrue(success.docker.removeContainer)
+        let rejected = try JSONDecoder().decode(ContainerRemovalData.self, from: Data(#"{"docker":{"removeContainer":false}}"#.utf8))
+        XCTAssertFalse(rejected.docker.removeContainer)
+    }
+    func testCatalogReturnsAfterServerLoginOnlyOnMatchingOrigin() {
+        let server = URL(string: "https://tower.example.ts.net:4443/graphql")!
+        let catalog = CatalogPolicy.url(server: server)
+        XCTAssertEqual(catalog.absoluteString, "https://tower.example.ts.net:4443/Apps")
+        XCTAssertEqual(CatalogPolicy.url(server: URL(string: "https://tower.example/base/graphql")!).path, "/base/Apps")
+        XCTAssertTrue(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: true))
+        for value in ["http://tower.example.ts.net:4443/Main", "https://tower.example.ts.net/Main", "https://other.example:4443/Main", "https://tower.example.ts.net:4443/Apps", "https://tower.example.ts.net:4443/UpdateContainer"] {
+            XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: value)!, catalog: catalog, sawLogin: true))
+        }
+        XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: false))
+    }
+
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
         let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
         XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))

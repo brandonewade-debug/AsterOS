@@ -85,6 +85,30 @@ import SwiftUI
             } catch { if token == generation { metrics = nil; metricsError = "Live metrics unavailable with this server version or API permissions." } }
         } catch { if token == generation { self.error = error.localizedDescription } }
     }
+    func removeContainer(_ container: Container, from serverID: UUID) async throws {
+        guard let profile = selected, profile.id == serverID, !demo else { throw AppError.message("The selected server changed. Open this app's details again before removing it.") }
+        guard !operating else { throw AppError.message("Wait for the current container operation to finish.") }
+        let token = generation; operating = true
+        defer { operating = false }
+        let client = UnraidClient(profile: profile, key: try CredentialStore.read(profile.id))
+        // Never retry a removal automatically if the connection drops after it was sent.
+        try await client.removeContainer(id: container.id)
+        guard token == generation else { return }
+        generation = UUID() // Invalidate a list refresh that started before removal.
+        let refreshToken = generation
+        containers.removeAll { $0.id == container.id }
+        if let index = profiles.firstIndex(where: { $0.id == serverID }) {
+            profiles[index].apps.removeAll { $0.containerID == container.id }
+            persist()
+        }
+        dockerError = nil
+        do {
+            let updated = try await client.containers()
+            if refreshToken == generation { containers = updated }
+        } catch {
+            if refreshToken == generation { dockerError = "Container removed. The app list could not refresh; pull down to refresh it." }
+        }
+    }
     func perform(_ action: ContainerAction, container: Container) async {
         guard let profile = selected, !demo, !operating else { return }
         let token = generation; operating = true

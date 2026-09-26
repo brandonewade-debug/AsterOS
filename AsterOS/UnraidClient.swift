@@ -60,7 +60,17 @@ final class UnraidClient {
     func perform(_ action: ContainerAction, id: String) async throws {
         let _: ActionData = try await query("mutation ContainerAction($id: PrefixedID!) { docker { \(action.rawValue)(id: $id) { id } } }", variables: ["id": id])
     }
+    func removeContainer(id: String) async throws {
+        let result: ContainerRemovalData = try await query(Self.removeContainerMutation, variables: ["id": id])
+        guard result.docker.removeContainer else { throw AppError.message("Unraid did not confirm removal. Refresh the app list before trying again.") }
+    }
+    static let removeContainerMutation = "mutation RemoveContainer($id: PrefixedID!) { docker { removeContainer(id: $id, withImage: false) } }"
     static let overviewQuery = "query Overview { info { os { hostname release } cpu { brand cores } } array { state capacity { kilobytes { free used total } } disks { id name temp status } } }"
     static let containersQuery = "query Containers { docker { containers { id names state status iconUrl webUiUrl labels ports { ip privatePort publicPort type } hostConfig { networkMode } networkSettings } } }"
     static let metricsQuery = "query Metrics { metrics { cpu { percentTotal } memory { percentTotal } } }"
+}
+
+struct ContainerRemovalData: Decodable {
+    struct Result: Decodable { let removeContainer: Bool }
+    let docker: Result
 }
