@@ -57,12 +57,11 @@ struct AppLaunchItem: Identifiable {
     var id: String { container.map { "container:" + $0.name.lowercased() } ?? "shortcut:" + (shortcut?.id.uuidString ?? "") }
     var name: String { container?.name ?? shortcut?.name ?? "App" }
 }
-enum AppsSection: String, CaseIterable { case installed = "Installed", store = "App Store" }
 struct AppsView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var folders = AppFoldersStore()
     @State private var adding = false
-    @State private var section = AppsSection.installed
+    @State private var showingStore = false
     @State private var removal: ContainerRemovalTarget?
     @State private var catalogModel: CatalogBrowserModel?
     @State private var opened: SavedApp?
@@ -80,6 +79,11 @@ struct AppsView: View {
     private var items: [AppLaunchItem] {
         store.containers.map { AppLaunchItem(container: $0, shortcut: shortcut(for: $0)) } +
         (store.selected?.apps ?? []).filter { app in !store.containers.contains { shortcut(for: $0)?.id == app.id } }.map { AppLaunchItem(shortcut: $0) }
+    }
+    private func openStore() {
+        guard let server = store.selected, !store.demo else { return }
+        if catalogModel == nil { catalogModel = CatalogBrowserModel(server: server.address) }
+        showingStore = true
     }
     private func launch(_ item: AppLaunchItem) {
         guard !store.demo else { details = item.container; return }
@@ -148,34 +152,30 @@ struct AppsView: View {
     }
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                Picker("Apps section", selection: $section) {
-                    ForEach(AppsSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).padding(.horizontal, 24).padding(.top, 8)
-                if section == .store {
-                    if let server = store.selected, !store.demo {
-                        if let catalogModel { UnraidAppStoreView(server: server, model: catalogModel).id(server.id) }
-                        else { ProgressView("Opening App Store…").frame(maxWidth: .infinity, maxHeight: .infinity) }
-                    }
-                    else { ContentUnavailableView("Connect your server", systemImage: "bag", description: Text("Connect Unraid to browse and install Community Applications.")) }
-                } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     if store.demo { Text("Demo apps • Sample data").font(.caption).foregroundStyle(.orange) }
                     if let error = store.dockerError ?? folders.error { Text(error).font(.callout).foregroundStyle(.orange) }
                     if items.isEmpty && store.dockerError == nil { ContentUnavailableView("No apps loaded", systemImage: "square.grid.2x2", description: Text("Connect your Unraid server to see its Docker apps here.")) }
                     LazyVGrid(columns: columns, spacing: 30) {
+                        Button { openStore() } label: {
+                            VStack(spacing: 12) {
+                                Image(systemName: "bag.fill").font(.system(size: 34, weight: .medium)).foregroundStyle(.white)
+                                    .frame(width: 72, height: 72)
+                                    .background(LinearGradient(colors: [.mint, .teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                    .shadow(color: .mint.opacity(0.15), radius: 12, y: 5)
+                                Text("App Store").font(.caption).foregroundStyle(.primary).frame(height: 34, alignment: .top)
+                            }.frame(maxWidth: .infinity)
+                        }.buttonStyle(.plain).disabled(store.selected == nil || store.demo).accessibilityLabel("App Store")
                         ForEach(folders.layout.folders) { folderTile($0) }
                         ForEach(items.filter { folders.folder(for: $0.id) == nil }) { appTile($0) }
                     }
                     if !items.isEmpty { Text("Touch and hold an app to organize it.").font(.caption).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 24).padding(.vertical, 26).frame(maxWidth: 900).frame(maxWidth: .infinity)
-            }
-                }
             }.background { AsterBackdrop() }.navigationTitle("Apps")
             .toolbar {
                 Menu {
-                    Button("Install new app", systemImage: "bag.badge.plus") { section = .store }
+                    Button("Install new app", systemImage: "bag.badge.plus") { openStore() }
                     Button("New folder", systemImage: "folder.badge.plus") { prompt() }
                     Button("Add external shortcut", systemImage: "link") { adding = true }
                 } label: { Image(systemName: "plus") }.disabled(store.selected == nil || store.demo).accessibilityLabel("Add folder or shortcut")
@@ -216,14 +216,12 @@ struct AppsView: View {
                 }
             } message: { Text("Stopping an app interrupts its active connections and work.") }
             .refreshable { await store.refresh() }
-            .onChange(of: section) { _, value in
-                if value == .installed { Task { await store.refresh() } }
-                else if catalogModel == nil, let server = store.selected, !store.demo { catalogModel = CatalogBrowserModel(server: server.address) }
+            .fullScreenCover(isPresented: $showingStore, onDismiss: { Task { await store.refresh() } }) {
+                if let server = store.selected, let catalogModel { NativeAppStoreView(server: server, model: catalogModel) }
             }
             .task(id: store.selectedID) {
                 openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID)
-                catalogModel?.stop(); catalogModel = nil
-                if section == .store, let server = store.selected, !store.demo { catalogModel = CatalogBrowserModel(server: server.address) }
+                showingStore = false; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil
             }
         }
     }

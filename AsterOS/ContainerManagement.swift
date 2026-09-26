@@ -68,6 +68,13 @@ struct CatalogDialog {
 @MainActor final class CatalogBrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     let catalog: URL
+    @Published var catalogItems: [CatalogApp] = []
+    @Published var catalogReady = false
+    @Published var catalogBusy = false
+    @Published var catalogNext = false
+    @Published var catalogPrevious = false
+    @Published var needsCatalogLogin = false
+    private var catalogObservation: Task<Void, Never>?
     @Published var loading = false
     @Published var error: String?
     @Published var dialog: CatalogDialog?
@@ -91,7 +98,7 @@ struct CatalogDialog {
         openCatalog()
     }
     func openCatalog() {
-        error = nil; loading = true
+        error = nil; loading = true; catalogReady = false; catalogItems = []; needsCatalogLogin = false
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -100,6 +107,56 @@ struct CatalogDialog {
                 webView.load(URLRequest(url: catalog))
             } catch { self.error = error.localizedDescription; self.loading = false }
         }
+    }
+    private var onCatalog: Bool {
+        guard let url = webView.url else { return false }
+        return CatalogPolicy.sameOrigin(url, catalog) && url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == catalog.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+    func startCatalogObservation() {
+        guard catalogObservation == nil else { return }
+        catalogObservation = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.readNativeCatalog()
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            }
+        }
+    }
+    func stopCatalogObservation() { catalogObservation?.cancel(); catalogObservation = nil }
+    private func readNativeCatalog() async {
+        guard onCatalog, !webView.isLoading else { return }
+        do {
+            guard let json = try await webView.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as? String,
+                  let bytes = json.data(using: .utf8), bytes.count < 4_000_000 else { return }
+            let page = try JSONDecoder().decode(NativeCatalogPage.self, from: bytes)
+            guard !Task.isCancelled, onCatalog else { return }
+            catalogBusy = page.busy
+            if page.ready && !page.busy {
+                catalogItems = page.items; catalogReady = true; needsCatalogLogin = false
+                catalogNext = page.next; catalogPrevious = page.previous
+            }
+        } catch { /* Server view remains available if the plugin markup has changed. */ }
+    }
+    func searchCatalog(_ query: String) async {
+        guard onCatalog else { error = "Connect to the server catalog first."; return }
+        let query = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+        guard !query.isEmpty else { openCatalog(); return }
+        catalogBusy = true; error = nil
+        do {
+            let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.search, arguments: ["query": query], in: nil, contentWorld: .page) as? Bool
+            if ok != true { error = "Search is unavailable for this catalog version. Use the server view."; catalogBusy = false }
+        } catch { self.error = "Could not search the server catalog."; catalogBusy = false }
+    }
+    func catalogPage(forward: Bool) async {
+        guard onCatalog else { return }
+        do { _ = try await webView.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": forward], in: nil, contentWorld: .page) }
+        catch { self.error = "Could not load the next catalog page." }
+    }
+    func reviewCatalogApp(_ app: CatalogApp) async {
+        guard onCatalog else { error = "Return to the catalog and select the app again."; return }
+        do {
+            let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": app.id], in: nil, contentWorld: .page) as? Bool
+            if ok != true { error = "This catalog entry changed. Search for it in the server view." }
+        } catch { self.error = "Could not open the server's app details." }
     }
     func stop() { timeout?.cancel(); answerDialog(false); webView.stopLoading(); loading = false }
     func answerDialog(_ accepted: Bool) {
@@ -118,7 +175,7 @@ struct CatalogDialog {
         timeout?.cancel()
         timeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
-            self?.error = "The server is taking a while to respond. If an installation was submitted, check Installed before retrying it."
+            self?.error = "The server is taking a while to respond. If an installation was submitted, check your Apps grid before retrying it."
             self?.loading = false // Do not cancel an installer or replay its POST.
         }
     }
@@ -126,7 +183,7 @@ struct CatalogDialog {
         timeout?.cancel(); loading = false; canGoBack = webView.canGoBack
         guard let url = webView.url else { return }
         host = url.host ?? ""
-        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true }
+        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; needsCatalogLogin = true }
         if CatalogPolicy.returnAfterLogin(url, catalog: catalog, sawLogin: sawLogin) {
             sawLogin = false; webView.load(URLRequest(url: catalog))
         }
@@ -135,7 +192,7 @@ struct CatalogDialog {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
     private func fail(_ error: Error) {
         timeout?.cancel(); loading = false
-        if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load the server App Store (\((error as NSError).code)). Check the private connection. If you submitted an install, check Installed before trying again." }
+        if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load the server App Store (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, (url.scheme == "https" && url.user == nil && url.password == nil) || url.absoluteString == "about:blank" else {
@@ -167,7 +224,7 @@ struct UnraidAppStoreView: View {
                 Spacer()
                 Button { model.openCatalog() } label: { Image(systemName: "house") }.accessibilityLabel("Open app catalog")
             }.padding(.horizontal, 20).padding(.vertical, 10)
-            Text("Sign in to your server if prompted, then choose an app and review its installation settings. When finished, switch to Installed to refresh your apps.")
+            Text("Sign in to your server if prompted, then choose an app and review its installation settings. When finished, close the App Store to refresh your apps.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
             if model.loading { ProgressView().frame(maxWidth: .infinity) }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 20) }
