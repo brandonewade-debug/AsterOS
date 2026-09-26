@@ -2,6 +2,21 @@ import XCTest
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    func testShareAddressCannotEmbedCredentialsOrRedirectToWeb() throws {
+        XCTAssertEqual(try SharePolicy.host(" tower.local "), "tower.local")
+        XCTAssertEqual(try SharePolicy.host("smb://192.168.1.20/"), "192.168.1.20")
+        for host in ["", "https://server.test", "user:pass@server.test", "smb://server.test/share", "server.test:445", "server.test?token=secret", "server.test#fragment", "bad host", "server.test%2fother"] {
+            XCTAssertThrowsError(try SharePolicy.host(host), host)
+        }
+    }
+    func testShareFileNamesCannotEscapeDestination() throws {
+        XCTAssertEqual(try SharePolicy.child("photo.jpg", in: "Photos/2026"), "Photos/2026/photo.jpg")
+        XCTAssertEqual(try SharePolicy.name("Family photos"), "Family photos")
+        for name in ["", ".", "..", "../secret", "folder/file", "folder\\file", "file:stream", "name\n", "name.", "name ", "*"] {
+            XCTAssertThrowsError(try SharePolicy.name(name), name)
+        }
+    }
+
     func testCredentialBearingAddressesAreRejected() {
         for input in ["http://tower.local", "https://user:secret@host.test", "https://host.test?token=secret", "https://host.test/#login", "not a URL"] {
             XCTAssertThrowsError(try AddressPolicy.validate(input), input)

@@ -23,7 +23,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             DashboardView().tabItem { Label("Server", systemImage: "server.rack") }
-            CompanionFilesView().tabItem { Label("Files", systemImage: "folder") }
+            FilesView().tabItem { Label("Files", systemImage: "folder") }
             PlannedView(title: "Photos", symbol: "photo.on.rectangle", detail: "Photo backup, albums, and Live Photos are planned. This preview does not request photo access or upload your library.").tabItem { Label("Photos", systemImage: "photo") }
             AppsView().tabItem { Label("Apps", systemImage: "square.grid.2x2") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
@@ -341,6 +341,9 @@ struct SettingsView: View {
                     Button("Add server") { adding = true }
                     Button("Explore demo") { store.showDemo() }
                     if store.selected != nil { Button("Remove selected server", role: .destructive) { removing = true } }
+                }
+                Section("Remote access") {
+                    NavigationLink { VPNSetupView() } label: { Label("VPN automation", systemImage: "network.badge.shield.half.filled") }
                 }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)

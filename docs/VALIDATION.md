@@ -54,3 +54,15 @@ At the owner's request, Manage Docker is selected in onboarding and adds explici
 ## Simulator Keychain fix, 2026-09-26
 
 The owner completed Unraid login, approval, and the authenticated overview request, but saving failed. Simulator securityd reported AsterOS SecItemAdd error -34018: missing application-identifier/keychain-access-groups entitlements. A new hosted Keychain round-trip test reproduced this with CODE_SIGNING_ALLOWED=NO. Rebuilding with CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- supplied the simulator signing identity and all nine tests passed, including save/read/update/delete. CI now uses the same signing flags. No plaintext credential fallback was introduced. The correctly signed build was installed into the development simulator; the owner's final connection retry remains to be observed.
+
+
+## Direct Files and VPN setup — 2026-09-26
+
+- Signed iPhone 17 Pro simulator build passes 11 XCTest checks, including Keychain lifecycle, SMB address validation and filename traversal prevention.
+- Direct Files uses SMBClient pinned to 66eafaa6d17e034e8036dee4b3ebc1b52cb53919, with its MIT license bundled. Debug builds now use the active architecture consistently with Swift packages.
+- Share credentials are separate from API credentials, per selected server. No root password reuse. No plaintext secrets in defaults.
+- Browse shares/directories, create folders, stream downloads to temporary storage and upload through a unique staging file. Rename refuses overwrites. Temporary downloads are removed after sharing. Interrupted uploads can leave a hidden staging file on the share and must be restarted.
+- SMB 2.x transport requires a trusted LAN or VPN; this is not an SMB3 encryption implementation. Network session signing is requested. Server permissions remain authoritative.
+- Live authenticated file transfers and on-device VPN automation have NOT been validated; a user share account and physical iPhone are required. This is a development preview.
+- Settings → VPN automation describes Tailscale Connect/Disconnect personal automations and opens Shortcuts. It does not install automations, imply VPN state, or control another app’s tunnel. Switching away triggers the close automation and can interrupt transfers or other apps using Tailscale.
+- Cloudflare tunnel idea cancelled by user before any Cloudflare changes.

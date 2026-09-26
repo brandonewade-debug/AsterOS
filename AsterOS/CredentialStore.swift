@@ -33,7 +33,7 @@ enum CredentialStore {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(item as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data, let key = String(data: data, encoding: .utf8) else {
-            throw AppError.message("The saved API key is unavailable. Remove this connection and add it again.")
+            throw AppError.message("The saved credential is unavailable. Remove this connection and add it again.")
         }
         return key
     }

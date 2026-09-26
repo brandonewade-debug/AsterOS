@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the dependency-free Xcode project deterministically."""
+"""Generate the Xcode project deterministically."""
 from pathlib import Path
 import hashlib
 import json
@@ -11,6 +11,9 @@ def add(name, value): objects[ident(name)] = value; return ident(name)
 def q(value): return json.dumps(value)
 def refs(values): return '(' + ', '.join(values) + (',' if values else '') + ')'
 
+package = add('package/SMBClient', 'isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/kishikawakatsumi/SMBClient.git"; requirement = { kind = revision; revision = 66eafaa6d17e034e8036dee4b3ebc1b52cb53919; };')
+package_product = add('packageProduct/SMBClient', f'isa = XCSwiftPackageProductDependency; package = {package}; productName = SMBClient;')
+package_build = add('build/SMBClient', f'isa = PBXBuildFile; productRef = {package_product};')
 groups = []
 for folder in ['AsterOS', 'AsterOSTests']:
     files = []
@@ -24,9 +27,12 @@ for folder in ['AsterOS', 'AsterOSTests']:
         ref = add('assets', 'isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>";')
         files.append(ref)
         resources.append(add('build/assets', f'isa = PBXBuildFile; fileRef = {ref};'))
+        ref = add('licenses', 'isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>";')
+        files.append(ref)
+        resources.append(add('build/licenses', f'isa = PBXBuildFile; fileRef = {ref};'))
     groups.append(add('group/' + folder, f'isa = PBXGroup; children = {refs(files)}; path = {folder}; sourceTree = "<group>";'))
     add('sources/' + folder, f'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = {refs(builds)}; runOnlyForDeploymentPostprocessing = 0;')
-    add('frameworks/' + folder, 'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+    add('frameworks/' + folder, f'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = {refs([package_build] if folder == "AsterOS" else [])}; runOnlyForDeploymentPostprocessing = 0;')
     add('resources/' + folder, f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = {refs(resources)}; runOnlyForDeploymentPostprocessing = 0;')
 
 products = []
@@ -41,7 +47,7 @@ for scope in ['project', 'AsterOS', 'AsterOSTests']:
     for mode in ['Debug', 'Release']:
         settings = dict(common)
         settings.update({'SWIFT_OPTIMIZATION_LEVEL': '-Onone' if mode == 'Debug' else '-O', 'DEBUG_INFORMATION_FORMAT': 'dwarf' if mode == 'Debug' else 'dwarf-with-dsym'})
-        if mode == 'Debug': settings.update({'ENABLE_TESTABILITY': 'YES', 'SWIFT_ACTIVE_COMPILATION_CONDITIONS': 'DEBUG'})
+        if mode == 'Debug': settings.update({'ENABLE_TESTABILITY': 'YES', 'SWIFT_ACTIVE_COMPILATION_CONDITIONS': 'DEBUG', 'ONLY_ACTIVE_ARCH': 'YES'})
         if scope != 'project':
             settings.update({'PRODUCT_NAME':'$(TARGET_NAME)', 'PRODUCT_BUNDLE_IDENTIFIER': 'com.asterlinelabs.' + scope.lower(), 'GENERATE_INFOPLIST_FILE':'YES', 'CODE_SIGN_STYLE':'Automatic', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator', 'CURRENT_PROJECT_VERSION':'1', 'MARKETING_VERSION':'0.1.0'})
             if scope == 'AsterOS':
@@ -55,8 +61,8 @@ for scope in ['project', 'AsterOS', 'AsterOSTests']:
 proxy = add('proxy', f'isa = PBXContainerItemProxy; containerPortal = {ident("project")}; proxyType = 1; remoteGlobalIDString = {ident("target/AsterOS")}; remoteInfo = AsterOS;')
 dependency = add('dependency', f'isa = PBXTargetDependency; target = {ident("target/AsterOS")}; targetProxy = {proxy};')
 for name, kind in [('AsterOS','application'), ('AsterOSTests','bundle.unit-test')]:
-    add('target/' + name, f'isa = PBXNativeTarget; buildConfigurationList = {ident("configs/" + name)}; buildPhases = {refs([ident(t + "/" + name) for t in ["sources","frameworks","resources"]])}; buildRules = (); dependencies = {refs([dependency] if name.endswith("Tests") else [])}; name = {name}; productName = {name}; productReference = {ident("product/" + name)}; productType = "com.apple.product-type.{kind}";')
-add('project', f'isa = PBXProject; attributes = {{ LastUpgradeCheck = 1600; BuildIndependentTargetsInParallel = YES; }}; buildConfigurationList = {ident("configs/project")}; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = {main_group}; productRefGroup = {product_group}; projectDirPath = ""; projectRoot = ""; targets = {refs([ident("target/AsterOS"), ident("target/AsterOSTests")])};')
+    add('target/' + name, f'isa = PBXNativeTarget; buildConfigurationList = {ident("configs/" + name)}; buildPhases = {refs([ident(t + "/" + name) for t in ["sources","frameworks","resources"]])}; buildRules = (); dependencies = {refs([dependency] if name.endswith("Tests") else [])}; packageProductDependencies = {refs([package_product] if name == "AsterOS" else [])}; name = {name}; productName = {name}; productReference = {ident("product/" + name)}; productType = "com.apple.product-type.{kind}";')
+add('project', f'isa = PBXProject; attributes = {{ LastUpgradeCheck = 1600; BuildIndependentTargetsInParallel = YES; }}; buildConfigurationList = {ident("configs/project")}; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = {main_group}; productRefGroup = {product_group}; projectDirPath = ""; projectRoot = ""; packageReferences = {refs([package])}; targets = {refs([ident("target/AsterOS"), ident("target/AsterOSTests")])};')
 project = root / 'AsterOS.xcodeproj'
 project.mkdir(exist_ok=True)
 (project / 'project.pbxproj').write_text('// !$*UTF8*$!\n{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {\n' + '\n'.join(f'{key} = {{ {value} }};' for key, value in objects.items()) + f'\n}}; rootObject = {ident("project")}; }}\n')
