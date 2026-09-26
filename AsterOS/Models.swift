@@ -16,6 +16,7 @@ struct SavedApp: Codable, Identifiable, Equatable {
     var name: String
     var url: URL
     var symbol = "square.stack.3d.up.fill"
+    var containerID: String?
 }
 enum AddressPolicy {
     static func validate(_ input: String) throws -> URL {
@@ -65,7 +66,25 @@ struct DockerData: Decodable { var docker: DockerList }
 struct DockerList: Decodable { var containers: [Container] }
 struct Container: Decodable, Identifiable {
     var id: String; var names: [String]; var state: String; var status: String
+    var iconUrl: String?
+    var webUiUrl: String?
+    var labels: [String: String]?
     var name: String { (names.first ?? "Container").trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+}
+extension Container {
+    func iconAddress(server: URL?) -> URL? {
+        secureURL(iconUrl ?? labels?["net.unraid.docker.icon"], relativeTo: server)
+    }
+    func webAddress(server: URL?) -> URL? {
+        secureURL(webUiUrl ?? labels?["net.unraid.docker.webui"], relativeTo: server)
+    }
+    private func secureURL(_ value: String?, relativeTo server: URL?) -> URL? {
+        guard let value, !value.isEmpty, !value.contains("["),
+              let url = URL(string: value, relativeTo: server)?.absoluteURL,
+              url.scheme?.lowercased() == "https", url.host != nil,
+              url.user == nil, url.password == nil else { return nil }
+        return url
+    }
 }
 struct MetricsData: Decodable { var metrics: Metrics }
 struct Metrics: Decodable {

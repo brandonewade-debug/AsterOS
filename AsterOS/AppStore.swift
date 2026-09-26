@@ -52,10 +52,10 @@ import SwiftUI
         try CredentialStore.remove(id)
         profiles.removeAll { $0.id == id }; select(profiles.first?.id)
     }
-    func addApp(name: String, address: String) throws {
+    func addApp(name: String, address: String, containerID: String? = nil) throws {
         let url = try AddressPolicy.validate(address)
         guard let i = profiles.firstIndex(where: { $0.id == selectedID }) else { throw AppError.message("Connect a server before adding an app.") }
-        profiles[i].apps.append(SavedApp(name: name.isEmpty ? (url.host ?? "App") : name, url: url)); persist()
+        profiles[i].apps.append(SavedApp(name: name.isEmpty ? (url.host ?? "App") : name, url: url, containerID: containerID)); persist()
     }
     func removeApp(_ id: UUID) {
         guard let i = profiles.firstIndex(where: { $0.id == selectedID }) else { return }

@@ -183,47 +183,63 @@ struct AppsView: View {
     @State private var adding = false
     @State private var opened: SavedApp?
     @State private var pending: Container?
+    @State private var details: Container?
+    private let columns = [GridItem(.adaptive(minimum: 72, maximum: 96), spacing: 18)]
+    private func shortcut(for container: Container) -> SavedApp? {
+        store.selected?.apps.first { $0.containerID == container.id || ($0.containerID == nil && $0.name.caseInsensitiveCompare(container.name) == .orderedSame) }
+    }
+    private func launch(_ container: Container) {
+        guard !store.demo else { details = container; return }
+        if let app = shortcut(for: container) { opened = app }
+        else if let url = container.webAddress(server: store.selected?.address) { opened = SavedApp(name: container.name, url: url, containerID: container.id) }
+        else { details = container }
+    }
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Launchpad").font(.title2.bold())
-                    if store.selected?.apps.isEmpty != false {
-                        Panel { Text("Add an app’s HTTPS URL to open it here. Each app keeps its own website login; the Unraid API key is never sent to it.").foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 28) {
+                    if store.demo { Text("Demo apps • Sample data").font(.caption).foregroundStyle(.orange) }
+                    if let error = store.dockerError { Text(error).font(.callout).foregroundStyle(.orange) }
+                    if store.containers.isEmpty && store.dockerError == nil {
+                        ContentUnavailableView("No apps loaded", systemImage: "square.grid.2x2", description: Text("Connect your Unraid server to see its Docker apps here."))
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 24) {
-                        ForEach(store.selected?.apps ?? []) { app in
-                            Button { opened = app } label: {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 30) {
+                        ForEach(store.containers) { container in
+                            Button { launch(container) } label: {
                                 VStack(spacing: 10) {
-                                    Image(systemName: app.symbol).font(.largeTitle).frame(width: 78, height: 78).background(.mint.opacity(0.15), in: RoundedRectangle(cornerRadius: 22))
-                                    Text(app.name).font(.subheadline).foregroundStyle(.white).lineLimit(2)
-                                }
-                            }.contextMenu { Button("Remove shortcut", role: .destructive) { store.removeApp(app.id) } }
-                        }
-                    }
-                    Text("Containers").font(.title2.bold())
-                    if store.demo { Text("Sample container • Controls disabled").foregroundStyle(.orange) }
-                    if let error = store.dockerError { Text(error).foregroundStyle(.orange) }
-                    if store.containers.isEmpty && store.dockerError == nil { Text("No container data loaded.").foregroundStyle(.secondary) }
-                    ForEach(store.containers) { container in
-                        Panel {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(container.name).font(.headline)
-                                    Text(container.status).font(.caption).foregroundStyle(.secondary)
-                                    Text(container.state.capitalized).font(.caption.bold()).foregroundStyle(container.state == "RUNNING" ? .mint : .orange)
-                                }
-                                Spacer()
+                                    ContainerIcon(container: container, server: store.selected?.address)
+                                    Text(container.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.center).lineLimit(2).frame(height: 34, alignment: .top)
+                                }.frame(maxWidth: .infinity)
+                            }.buttonStyle(.plain)
+                            .accessibilityLabel("\(container.name), \(container.state.lowercased())")
+                            .contextMenu {
+                                Button("Open app", systemImage: "arrow.up.forward.app") { launch(container) }.disabled(store.demo)
+                                Button("App details", systemImage: "info.circle") { details = container }
                                 if container.state == "RUNNING" || container.state == "EXITED" {
-                                    Button(container.state == "RUNNING" ? "Stop" : "Start") { pending = container }.buttonStyle(.bordered).disabled(store.demo || store.operating)
+                                    Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating)
                                 }
                             }
                         }
                     }
-                }.padding(20).frame(maxWidth: 900)
+                    let extras = (store.selected?.apps ?? []).filter { app in !store.containers.contains { shortcut(for: $0)?.id == app.id } }
+                    if !extras.isEmpty {
+                        Text("Shortcuts").font(.headline).foregroundStyle(.secondary)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 30) {
+                            ForEach(extras) { app in
+                                Button { opened = app } label: {
+                                    VStack(spacing: 10) {
+                                        Image(systemName: app.symbol).font(.largeTitle).frame(width: 72, height: 72).background(.mint.opacity(0.15), in: RoundedRectangle(cornerRadius: 18))
+                                        Text(app.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.center).lineLimit(2).frame(height: 34, alignment: .top)
+                                    }.frame(maxWidth: .infinity)
+                                }.buttonStyle(.plain).contextMenu { Button("Remove shortcut", role: .destructive) { store.removeApp(app.id) } }
+                            }
+                        }
+                    }
+                }.padding(.horizontal, 20).padding(.vertical, 24).frame(maxWidth: 900)
             }.frame(maxWidth: .infinity).background(DockTheme.background).navigationTitle("Apps")
                 .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.disabled(store.selected == nil || store.demo).accessibilityLabel("Add app shortcut") }
                 .sheet(isPresented: $adding) { AddAppView() }
+                .sheet(item: $details) { container in ContainerDetailsView(container: container) }
                 .fullScreenCover(item: $opened) { AppBrowser(app: $0) }
                 .confirmationDialog("Change container state?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible) {
                     if let container = pending {
@@ -237,7 +253,59 @@ struct AppsView: View {
         }
     }
 }
+struct ContainerIcon: View {
+    let container: Container
+    let server: URL?
+    var body: some View {
+        AsyncImage(url: container.iconAddress(server: server)) { phase in
+            if case let .success(image) = phase { image.resizable().scaledToFit().padding(2) }
+            else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18).fill(.mint.opacity(0.14))
+                    Text(String(container.name.prefix(2)).uppercased()).font(.system(size: 26, weight: .semibold, design: .rounded)).foregroundStyle(.mint)
+                }
+            }
+        }.frame(width: 72, height: 72).clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(alignment: .bottomTrailing) {
+                Circle().fill(container.state == "RUNNING" ? Color.green : Color.secondary)
+                    .frame(width: 10, height: 10).overlay(Circle().stroke(DockTheme.background, lineWidth: 2)).offset(x: 2, y: 2)
+            }
+    }
+}
+struct ContainerDetailsView: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let container: Container
+    @State private var editing = false
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack(spacing: 18) {
+                        ContainerIcon(container: container, server: store.selected?.address)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(container.name).font(.headline)
+                            Text(container.state.capitalized).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(container.status).font(.callout)
+                }
+                Section {
+                    Button("Set app URL") { editing = true }.disabled(store.demo)
+                    Text("Set an HTTPS address to launch this app. A custom domain can be used when its local WebUI only supports HTTP.").font(.caption).foregroundStyle(.secondary)
+                }
+            }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("Done") { dismiss() } }
+                .sheet(isPresented: $editing) { AddAppView(initialName: container.name, containerID: container.id) }
+        }
+    }
+}
 struct AddAppView: View {
+    let containerID: String?
+    init(initialName: String = "", containerID: String? = nil) {
+        self.containerID = containerID
+        _name = State(initialValue: initialName)
+    }
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
@@ -248,7 +316,7 @@ struct AddAppView: View {
             TextField("App name", text: $name)
             TextField("https://app.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             if let error { Text(error).foregroundStyle(.orange) }
-            Button("Add app") { do { try store.addApp(name: name, address: address); dismiss() } catch { self.error = error.localizedDescription } }.disabled(address.isEmpty)
+            Button("Add app") { do { try store.addApp(name: name, address: address, containerID: containerID); dismiss() } catch { self.error = error.localizedDescription } }.disabled(address.isEmpty)
         }.navigationTitle("Add app").toolbar { Button("Cancel") { dismiss() } } }
     }
 }
