@@ -12,6 +12,10 @@ The GitHub Actions job for commit `dfe1fb839edd978131d6f1b5747ed76fe29bf715` fai
 
 Run: https://github.com/brandonewade-debug/AsterOS/actions/runs/36259461034
 
+## Local Mac validation, 2026-09-26
+
+The initial foundation compiled with Xcode 26.6 (17F113) on the development Mac. Four XCTest checks passed on the iPhone 17 Pro simulator running iOS 26.5. Companion UI additions are being validated separately. Seventeen companion tests passed in the Python environment. No physical iPhone or TestFlight upload has occurred.
+
 ## Before internal TestFlight
 
 - Run the included GitHub Actions workflow or Xcode Product → Test; resolve compiler/test failures.

@@ -1,0 +1,27 @@
+services:
+  asteros-companion:
+    build: .
+    image: asteros-companion:0.1.0
+    container_name: asteros-companion
+    restart: unless-stopped
+    user: "99:100"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    ports:
+      - "${ASTEROS_BIND_IP:-127.0.0.1}:8790:8790"
+    volumes:
+      - /mnt/user/appdata/asteros-companion:/data
+      - /mnt/user/AsterOS:/storage
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      ASTEROS_RESERVE_BYTES: "1073741824"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"

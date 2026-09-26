@@ -9,7 +9,7 @@ A native iPhone and iPad companion for Unraid, by Asterline Labs. Development fo
 3. Choose **Explore demo**, or supply your server's HTTPS address and Unraid API key.
 4. For a physical device, set your signing team and a unique bundle identifier in the app target. The current identifier `com.asterlinelabs.asteros` is provisional; it is not registered by this project.
 
-Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are included. This starter was authored on Linux without Swift/Xcode; it has not been compiled, simulator-tested, or device-tested. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
+Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are included. The initial iOS foundation built successfully on the development Mac with Xcode 26.6, and four XCTest checks passed on the iPhone 17 Pro simulator. Companion UI additions require a new build. No physical-device or TestFlight release is claimed. The included macOS CI workflow builds and runs the unit tests once pushed to GitHub with Actions enabled.
 
 ## Implemented source
 
@@ -23,11 +23,13 @@ Requires iOS/iPadOS 17+. No third-party runtime dependencies. No credentials are
 - In-app WebKit browser with bottom controls, back/forward, reload, Safari fallback, and close.
 - Clearly labeled demo data; controls cannot mutate a server in demo mode.
 - Refresh while foregrounded, pull-to-refresh, last successful timestamp, and visible errors.
-- Unit-test source for address validation, capacity units and GraphQL error decoding.
+- Unit tests for address validation, capacity units and GraphQL error decoding.
+- Companion container and 17 Python tests covering pairing, scoped files, resumable uploads and security boundaries.
+- Files tab with companion pairing, browsing, folder creation, foreground uploads and download sharing.
 
 ## Important boundaries
 
-Files and Photos are explicitly labeled future features, not functioning file/backup screens. No app catalog, installs, updates, VM management, SSH, push notifications, biometric lock, relay, or automatic LAN/remote fallback is implemented.
+Files now connects to the separately deployed companion for pairing, browsing, folder creation, foreground resumable uploads and file downloads. Photos remains a clearly labeled future feature. No app catalog, installs, updates, VM management, SSH, push notifications, biometric lock, relay, or automatic LAN/remote fallback is implemented. Companion storage is independent of the selected Unraid dashboard profile and clearly displays its own hostname. Only one companion connection is stored in this preview.
 
 This initial browser uses ephemeral sessions: website logins are cleared when its WebKit session is released. Persistent isolated app sessions, downloads/uploads and external OAuth need implementation and device validation before release. Some providers disallow embedded login; use Open in Safari in this preview. Browser sessions never receive the Unraid API key.
 

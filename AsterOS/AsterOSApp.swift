@@ -23,7 +23,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             DashboardView().tabItem { Label("Server", systemImage: "server.rack") }
-            PlannedView(title: "Files", symbol: "folder.fill", detail: "Share browsing and resumable transfers are planned for the server companion. No files are accessed by this preview.").tabItem { Label("Files", systemImage: "folder") }
+            CompanionFilesView().tabItem { Label("Files", systemImage: "folder") }
             PlannedView(title: "Photos", symbol: "photo.on.rectangle", detail: "Photo backup, albums, and Live Photos are planned. This preview does not request photo access or upload your library.").tabItem { Label("Photos", systemImage: "photo") }
             AppsView().tabItem { Label("Apps", systemImage: "square.grid.2x2") }
             SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
@@ -252,7 +252,7 @@ struct SettingsView: View {
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
                     Text("0.1.0 • Development foundation")
-                    Text("Files, photo backup, automatic routing, notifications, Face ID lock, app installation, and terminal access are not implemented yet.").foregroundStyle(.secondary)
+                    Text("Photo backup, automatic routing, notifications, Face ID lock, app installation, and terminal access are not implemented yet.").foregroundStyle(.secondary)
                 }
                 Section("Privacy") { Text("Server keys stay in the device Keychain. This build has no analytics, cloud account, relay service, or photo uploads. App browser cookies are kept only for the current browser session.") }
                 if let error { Text(error).foregroundStyle(.orange) }
