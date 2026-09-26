@@ -12,7 +12,28 @@ struct PhotoBackupReceipt: Codable {
         version == 1 && asset == expected && !files.isEmpty && Set(files.map(\.name)).count == files.count && files.allSatisfy { (try? SharePolicy.name($0.name)) != nil && entries[$0.name] == $0.size }
     }
 }
+enum PhotoFolderLayout: String, CaseIterable, Identifiable {
+    case monthly, daily
+    var id: String { rawValue }
+    var label: String { self == .monthly ? "Year → Month" : "Year → Month → Day" }
+}
 enum PhotoBackupPolicy {
+    private static func format(_ date: Date, _ pattern: String, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = timeZone
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+    static func folders(date: Date?, layout: PhotoFolderLayout, timeZone: TimeZone) -> [String] {
+        guard let date else { return ["Unknown date"] }
+        let month = [format(date, "yyyy", timeZone: timeZone), format(date, "MM", timeZone: timeZone)]
+        return layout == .monthly ? month : month + [format(date, "dd", timeZone: timeZone)]
+    }
+    static func resourceName(date: Date?, originalName: String, identity: String, index: Int, timeZone: TimeZone) throws -> String {
+        let original = try SharePolicy.name(originalName)
+        let stamp = date.map { format($0, "yyyy-MM-dd HH-mm-ss", timeZone: timeZone) } ?? "Unknown date"
+        return try SharePolicy.name("\(stamp) [\(identity.prefix(16))]-\(index)-\(original)")
+    }
     static func identifier(_ localID: String, modified: Date?) -> String {
         SHA256.hash(data: Data("\(localID)|\(modified?.timeIntervalSince1970 ?? 0)".utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -21,6 +42,9 @@ enum PhotoBackupPolicy {
 @MainActor final class PhotoBackupStore: ObservableObject {
     @Published var share = ""
     @Published var folder = "AsterOS Photos"
+    @Published var layout: PhotoFolderLayout = .monthly {
+        didSet { UserDefaults.standard.set(layout.rawValue, forKey: settingsKey + "-layout") }
+    }
     @Published var shares: [String] = []
     @Published private(set) var busy = false
     @Published private(set) var backingUp = false
@@ -44,6 +68,7 @@ enum PhotoBackupPolicy {
         if let saved = UserDefaults.standard.dictionary(forKey: settingsKey) as? [String: String] {
             share = saved["share"] ?? ""; folder = saved["folder"] ?? "AsterOS Photos"
         }
+        layout = UserDefaults.standard.string(forKey: settingsKey + "-layout").flatMap(PhotoFolderLayout.init(rawValue:)) ?? .monthly
         refreshPhotoCount()
     }
     func refreshPhotoCount() {
@@ -107,13 +132,14 @@ enum PhotoBackupPolicy {
         guard !busy else { return }
         busy = true; backingUp = true; paused = false; timedOut = false; error = nil; completed = 0; progress = 0
         let destinationShare = share, destinationFolder = folder
-        task = Task { await backup(share: destinationShare, folder: destinationFolder, limit: limit) }
+        let destinationLayout = layout
+        task = Task { await backup(share: destinationShare, folder: destinationFolder, layout: destinationLayout, limit: limit) }
     }
     func pause() {
         guard backingUp else { return }
         paused = true; status = "Pausing…"; task?.cancel(); client?.session.disconnect()
     }
-    private func backup(share: String, folder: String, limit: Int?) async {
+    private func backup(share: String, folder: String, layout: PhotoFolderLayout, limit: Int?) async {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("asteros-photos-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary); finish() }
         do {
@@ -129,21 +155,67 @@ enum PhotoBackupPolicy {
             } else { try await client.createDirectory(path: folder) }
             UserDefaults.standard.set(["share": share, "folder": folder], forKey: settingsKey)
             let folders = try await client.listDirectory(path: folder)
-            var knownFolders = Set(folders.filter(\.isDirectory).map(\.name))
+            let legacyFolders = Set(folders.filter(\.isDirectory).map(\.name))
+            var cachedFolders: [String: Set<String>] = [folder: legacyFolders]
+            var cachedSizes: [String: [String: UInt64]] = [:]
+            let timeZoneKey = settingsKey + "-timeZone"
+            let timeZone = UserDefaults.standard.string(forKey: timeZoneKey).flatMap(TimeZone.init(identifier:)) ?? .current
+            UserDefaults.standard.set(timeZone.identifier, forKey: timeZoneKey)
             let fetched = assets(); count = fetched.count
             total = min(count, max(0, limit ?? count))
             for index in 0..<total {
                 try check(); touch()
                 let asset = fetched.object(at: fetched.count - total + index)
                 let identity = PhotoBackupPolicy.identifier(asset.localIdentifier, modified: asset.modificationDate)
-                let path = try SharePolicy.child(identity, in: folder)
+                let resources = PHAssetResource.assetResources(for: asset)
+                guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
+                let legacy = legacyFolders.contains(identity)
+                var components = legacy ? [identity] : PhotoBackupPolicy.folders(date: asset.creationDate, layout: layout, timeZone: timeZone)
+                let receiptName = legacy ? "complete.json" : ".asteros-" + identity + ".json"
+                // Find completed or interrupted backups in either layout before creating anything.
+                if !legacy {
+                    for candidateLayout in [layout] + PhotoFolderLayout.allCases.filter({ $0 != layout }) {
+                        let candidate = PhotoBackupPolicy.folders(date: asset.creationDate, layout: candidateLayout, timeZone: timeZone)
+                        var candidatePath = folder
+                        var found = true
+                        for component in candidate {
+                            if cachedFolders[candidatePath] == nil {
+                                cachedFolders[candidatePath] = Set(try await client.listDirectory(path: candidatePath).filter(\.isDirectory).map(\.name))
+                            }
+                            guard cachedFolders[candidatePath, default: []].contains(component) else { found = false; break }
+                            candidatePath = try SharePolicy.child(component, in: candidatePath)
+                        }
+                        if found {
+                            if cachedSizes[candidatePath] == nil {
+                                cachedSizes[candidatePath] = Dictionary(try await client.listDirectory(path: candidatePath).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
+                            }
+                            let firstName = try PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: resources[0].originalFilename, identity: identity, index: 0, timeZone: timeZone)
+                            if cachedSizes[candidatePath]?[receiptName] != nil || cachedSizes[candidatePath]?[firstName] != nil {
+                                components = candidate; break
+                            }
+                        }
+                    }
+                }
+                var path = folder
                 status = "Checking item \(index + 1) of \(total)"
-                if !knownFolders.contains(identity) { try await client.createDirectory(path: path); knownFolders.insert(identity) }
-                let existing = try await client.listDirectory(path: path)
-                let sizes = Dictionary(existing.filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
-                if let receiptSize = sizes["complete.json"] {
+                for component in components {
+                    try check(); touch()
+                    if cachedFolders[path] == nil { cachedFolders[path] = Set(try await client.listDirectory(path: path).filter(\.isDirectory).map(\.name)) }
+                    let next = try SharePolicy.child(component, in: path)
+                    if !cachedFolders[path, default: []].contains(component) {
+                        try await client.createDirectory(path: next)
+                        cachedFolders[path, default: []].insert(component)
+                        cachedFolders[next] = []
+                    }
+                    path = next
+                }
+                if cachedSizes[path] == nil {
+                    cachedSizes[path] = Dictionary(try await client.listDirectory(path: path).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
+                }
+                let sizes = cachedSizes[path] ?? [:]
+                if let receiptSize = sizes[receiptName] {
                     guard receiptSize < 1_000_000 else { throw AppError.message("An existing backup receipt is invalid. Choose a new backup folder.") }
-                    let reader = client.fileReader(path: path + "/complete.json")
+                    let reader = client.fileReader(path: path + "/" + receiptName)
                     let bytes: Data
                     do { bytes = try await reader.read(offset: 0, length: 1_000_000); try await reader.close() }
                     catch { try? await reader.close(); throw error }
@@ -153,12 +225,11 @@ enum PhotoBackupPolicy {
                     completed += 1; continue
                 }
                 // Export every available resource: originals, Live Photo video and edit resources.
-                let resources = PHAssetResource.assetResources(for: asset)
-                guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
                 var records: [PhotoBackupReceipt.Resource] = []
                 for (resourceIndex, resource) in resources.enumerated() {
                     try check()
-                    let name = try SharePolicy.name("\(resourceIndex)-" + resource.originalFilename)
+                    let original = try SharePolicy.name(resource.originalFilename)
+                    let name = try legacy ? SharePolicy.name("\(resourceIndex)-" + original) : PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: original, identity: identity, index: resourceIndex, timeZone: timeZone)
                     let file = temporary.appendingPathComponent(UUID().uuidString)
                     status = "Preparing \(index + 1) of \(total) from Photos…"; progress = 0
                     watchdog?.cancel()
@@ -192,7 +263,9 @@ enum PhotoBackupPolicy {
                 let receipt = PhotoBackupReceipt(version: 1, asset: identity, files: records)
                 let file = temporary.appendingPathComponent("complete.json")
                 let encoded = try JSONEncoder().encode(receipt); try encoded.write(to: file, options: .atomic)
-                try await upload(file, to: path + "/complete.json", client: client, size: UInt64(encoded.count))
+                try await upload(file, to: path + "/" + receiptName, client: client, size: UInt64(encoded.count))
+                for record in records { cachedSizes[path, default: [:]][record.name] = record.size }
+                cachedSizes[path, default: [:]][receiptName] = UInt64(encoded.count)
                 completed += 1
             }
             progress = 1; status = "Backup complete · \(completed) items"
@@ -255,6 +328,11 @@ struct PhotoBackupView: View {
                         ForEach(backup.shares, id: \.self) { Text($0).tag($0) }
                     }.disabled(backup.busy)
                     TextField("Backup folder", text: $backup.folder).disabled(backup.busy).autocorrectionDisabled()
+                    Picker("Organize by", selection: $backup.layout) {
+                        ForEach(PhotoFolderLayout.allCases) { Text($0.label).tag($0) }
+                    }.disabled(backup.busy)
+                    Text("Photos and videos go directly inside each month, or each day if selected. Filenames start with capture date and time, so name sorting keeps each month in day order. They also include a short identifier and the original name. Live Photo components share the same identifier.").font(.caption).foregroundStyle(.secondary)
+                    Text("Existing backups keep their current locations and are still recognized.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Photo access") {
                     Button("Allow Photos") { Task { await backup.allowPhotos() } }.disabled(backup.busy)

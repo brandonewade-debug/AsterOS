@@ -2,6 +2,29 @@ import XCTest
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    func testPhotoFoldersAreReadableStableAndPathSafe() throws {
+        let date = ISO8601DateFormatter().date(from: "2026-09-26T16:31:00Z")!
+        let zone = TimeZone(secondsFromGMT: 0)!
+        XCTAssertEqual(PhotoBackupPolicy.folders(date: date, layout: .monthly, timeZone: zone), ["2026", "09"])
+        XCTAssertEqual(PhotoBackupPolicy.folders(date: date, layout: .daily, timeZone: zone), ["2026", "09", "26"])
+        XCTAssertEqual(PhotoBackupPolicy.folders(date: nil, layout: .monthly, timeZone: zone), ["Unknown date"])
+        let name = try PhotoBackupPolicy.resourceName(date: date, originalName: "IMG_1624.HEIC", identity: "abcdef0123456789", index: 0, timeZone: zone)
+        XCTAssertEqual(name, "2026-09-26 16-31-00 [abcdef0123456789]-0-IMG_1624.HEIC")
+        XCTAssertThrowsError(try PhotoBackupPolicy.resourceName(date: date, originalName: "../bad.jpg", identity: "abc", index: 0, timeZone: zone))
+        let other = try PhotoBackupPolicy.resourceName(date: date, originalName: "IMG_1624.HEIC", identity: "anotherasset", index: 0, timeZone: zone)
+        XCTAssertNotEqual(name, other)
+    }
+
+    func testMonthlyPhotoNamesSortByCaptureDayThenTime() throws {
+        let dates = ["2026-09-01T09:00:00Z", "2026-09-02T08:00:00Z", "2026-09-02T17:00:00Z", "2026-09-10T01:00:00Z", "2026-09-30T23:00:00Z"]
+        let names = try dates.enumerated().map { index, value in
+            try PhotoBackupPolicy.resourceName(date: ISO8601DateFormatter().date(from: value), originalName: "IMG_\(100-index).HEIC", identity: "asset\(index)", index: 0, timeZone: TimeZone(secondsFromGMT: 0)!)
+        }
+        // Match the Files view's natural name ordering, regardless of camera numbering.
+        let unordered = [names[4], names[2], names[0], names[3], names[1]]
+        XCTAssertEqual(unordered.sorted { $0.localizedStandardCompare($1) == .orderedAscending }, names)
+    }
+
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
         let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
         XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))

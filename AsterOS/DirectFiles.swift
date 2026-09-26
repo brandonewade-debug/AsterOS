@@ -110,7 +110,7 @@ struct DirectFile: Identifiable {
         if let share {
             try await client.connectShare(share)
             let files = try await client.listDirectory(path: path)
-            return files.filter { (try? SharePolicy.name($0.name)) != nil && !$0.name.hasPrefix(".asteros-upload-") }
+            return files.filter { (try? SharePolicy.name($0.name)) != nil && !$0.name.hasPrefix(".asteros-upload-") && $0.name.range(of: #"^\.asteros-[0-9a-f]{64}\.json$"#, options: .regularExpression) == nil }
                 .map { DirectFile(name: $0.name, directory: $0.isDirectory, size: $0.size) }
                 .sorted { $0.directory != $1.directory ? $0.directory : $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
