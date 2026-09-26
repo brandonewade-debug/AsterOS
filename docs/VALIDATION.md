@@ -46,3 +46,7 @@ The development Mac reached the server directly over LAN HTTPS with a trusted ce
 ### Post-login return correction
 
 The owner confirmed password sign-in succeeds but Unraid 7.2.2 lands on Main, discarding the authorization request. The app now resumes consent once after a same-origin Main/Dashboard landing and includes Continue to approval. All eight XCTest checks passed on the development simulator, including the landing-origin regression test. Full approval-to-dashboard completion remains an owner test.
+
+### Docker management authorization
+
+At the owner's request, Manage Docker is selected in onboarding and adds explicit Docker read/create/update/delete scopes to Viewer monitoring. Full administrator access is not requested. Turning the switch off requests Viewer alone. Existing issued keys are unchanged. Native container installation/removal controls remain unimplemented. The scope assertion and all eight XCTest checks passed. Main-page authorization resumption now triggers at navigation commit instead of waiting for streamed resources to finish; the manual Continue button stays available during loading.

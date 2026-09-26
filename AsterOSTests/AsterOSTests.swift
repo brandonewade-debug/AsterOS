@@ -31,7 +31,7 @@ final class AsterOSTests: XCTestCase {
         return url.url!
     }
     func testAuthorizationCallbackIsBoundToOriginStateAndExpiry() throws {
-        let request = try UnraidAuthorization(address: "https://server.test:8443/unraid/graphql", allowDockerControl: false)
+        let request = try UnraidAuthorization(address: "https://server.test:8443/unraid/graphql", allowDockerManagement: false)
         let items = [URLQueryItem(name: "state", value: request.state), URLQueryItem(name: "api_key", value: "test-key")]
         let valid = callback(request, items: items)
         XCTAssertEqual(try request.key(from: valid), "test-key")
@@ -48,7 +48,7 @@ final class AsterOSTests: XCTestCase {
         XCTAssertThrowsError(try request.key(from: callback(request, items: [items[0], URLQueryItem(name: "api_key", value: "bad\nkey")])) )
     }
     func testAuthorizationUsesLeastPrivilegeAndManualSafariHasNoCallback() throws {
-        let request = try UnraidAuthorization(address: "https://server.test/base/graphql", allowDockerControl: false)
+        let request = try UnraidAuthorization(address: "https://server.test/base/graphql", allowDockerManagement: false)
         let url = request.authorizationURL()
         XCTAssertEqual(url.path, "/base/ApiKeyAuthorize")
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
@@ -56,8 +56,10 @@ final class AsterOSTests: XCTestCase {
         let manual = request.authorizationURL(automaticReturn: false)
         XCTAssertFalse(manual.absoluteString.contains("redirect_uri"))
         XCTAssertFalse(manual.absoluteString.contains("state="))
-        let writable = try UnraidAuthorization(address: "https://server.test", allowDockerControl: true)
-        XCTAssertTrue(writable.authorizationURL().absoluteString.contains("docker:update"))
+        let writable = try UnraidAuthorization(address: "https://server.test", allowDockerManagement: true)
+        let scopes = URLComponents(url: writable.authorizationURL(), resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "scopes" }!.value!
+        XCTAssertEqual(Set(scopes.split(separator: ",").map(String.init)), Set(["role:viewer", "docker:read", "docker:create", "docker:update", "docker:delete"]))
+        XCTAssertFalse(scopes.contains("role:admin"))
     }
     func testRedirectErrorDoesNotDisplaySensitiveLocationData() {
         let response = HTTPURLResponse(url: URL(string: "https://server.test/graphql")!, statusCode: 302, httpVersion: nil,
@@ -68,7 +70,7 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(message.contains("api_key=secret"))
     }
     func testLoginLandingResumesOnlyOnSelectedServer() throws {
-        let request = try UnraidAuthorization(address: "https://server.test:8443", allowDockerControl: false)
+        let request = try UnraidAuthorization(address: "https://server.test:8443", allowDockerManagement: false)
         XCTAssertTrue(request.isPostLoginLanding(URL(string: "https://server.test:8443/Main")!))
         XCTAssertTrue(request.isPostLoginLanding(URL(string: "https://server.test:8443/Dashboard")!))
         for value in ["https://other.test:8443/Main", "https://server.test/Main", "http://server.test:8443/Main", "https://server.test:8443/login", "https://server.test:8443/ApiKeyAuthorize"] {

@@ -4,7 +4,7 @@
 
 Use the server's HTTPS WebGUI base URL, with its actual HTTPS port. A local or VPN-reachable URL avoids website authentication middleware. Certificates must be valid; the app does not disable TLS verification or forward API keys across redirects.
 
-The connection screen supports either a manually supplied key or the official Unraid `ApiKeyAuthorize` flow. By default AsterOS requests `role:viewer`. Docker control is opt-in and adds `docker:update`. Unraid displays the requested access for approval.
+The connection screen supports either a manually supplied key or the official Unraid `ApiKeyAuthorize` flow. The setup screen offers Viewer access or Manage Docker. Manage Docker is selected for this owner-focused test build and requests `role:viewer` plus `docker:read`, `docker:create`, `docker:update`, and `docker:delete`. Turn it off to request only `role:viewer`. Unraid displays the requested access for approval.
 
 The in-app authorization browser uses an ephemeral session. Its HTTPS callback is an unpredictable path on the selected server; it is intercepted before a network request. Callback origin, port, path, state, age, and parameter uniqueness are validated. The returned key is tested against the API and stored in this device's Keychain only if the connection succeeds. Password fields and browser cookies are not read by the app. An external identity provider may reject embedded browsers; the Safari alternative omits the automatic callback and requires copying the generated key back into the app.
 

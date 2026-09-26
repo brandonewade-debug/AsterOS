@@ -117,7 +117,7 @@ struct ConnectionView: View {
     @State private var key = ""
     @State private var kind: ConnectionKind = .custom
     @State private var authorization: UnraidAuthorization?
-    @State private var allowDockerControl = false
+    @State private var allowDockerManagement = true
     @State private var busy = false
     @State private var error: String?
     var body: some View {
@@ -138,9 +138,10 @@ struct ConnectionView: View {
                     Text("Enter your server address, then sign in below. No API key needs to be copied.")
                 }
                 Section {
-                    Toggle("Allow Docker start / stop", isOn: $allowDockerControl)
+                    Toggle("Manage Docker apps", isOn: $allowDockerManagement)
+                    Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Install/remove controls are still in development." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
                     Button {
-                        do { error = nil; authorization = try UnraidAuthorization(address: address, allowDockerControl: allowDockerControl) }
+                        do { error = nil; authorization = try UnraidAuthorization(address: address, allowDockerManagement: allowDockerManagement) }
                         catch { self.error = error.localizedDescription }
                     } label: { Label("Sign in to Unraid", systemImage: "person.badge.key.fill") }
                     .disabled(busy || address.isEmpty)

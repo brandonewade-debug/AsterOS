@@ -8,20 +8,20 @@ struct UnraidAuthorization: Identifiable {
     let server: URL
     let state = UUID().uuidString + UUID().uuidString
     let created = Date()
-    let allowDockerControl: Bool
+    let allowDockerManagement: Bool
     var callback: URL { server.appendingPathComponent("asteros-authorization/\(id.uuidString)/callback") }
-    init(address: String, allowDockerControl: Bool) throws {
+    init(address: String, allowDockerManagement: Bool) throws {
         var url = try AddressPolicy.validate(address)
         if url.lastPathComponent == "graphql" { url.deleteLastPathComponent() }
         server = url
-        self.allowDockerControl = allowDockerControl
+        self.allowDockerManagement = allowDockerManagement
     }
     func authorizationURL(automaticReturn: Bool = true) -> URL {
         var components = URLComponents(url: server.appendingPathComponent("ApiKeyAuthorize"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "name", value: "AsterOS"),
-            URLQueryItem(name: "description", value: "View your server dashboard" + (allowDockerControl ? " and start or stop Docker containers." : ".")),
-            URLQueryItem(name: "scopes", value: allowDockerControl ? "role:viewer,docker:update" : "role:viewer")
+            URLQueryItem(name: "description", value: "View your server dashboard" + (allowDockerManagement ? " and create, start, stop, update, or remove Docker containers." : ".")),
+            URLQueryItem(name: "scopes", value: allowDockerManagement ? "role:viewer,docker:read,docker:create,docker:update,docker:delete" : "role:viewer")
         ]
         if automaticReturn {
             components.queryItems! += [URLQueryItem(name: "redirect_uri", value: callback.absoluteString), URLQueryItem(name: "state", value: state)]
@@ -95,14 +95,19 @@ struct UnraidAuthorization: Identifiable {
         }
         decisionHandler(.allow)
     }
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { host = webView.url?.host ?? request.server.host ?? "Unraid" }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        host = webView.url?.host ?? request.server.host ?? "Unraid"
+        // Main may keep streaming resources open, so do not wait for didFinish.
+        resumeAfterLogin()
+    }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loading = false
-        // Some Unraid versions discard the original URL during password login.
-        // Resume once in the same WebKit session, which now holds the login cookie.
+        resumeAfterLogin()
+    }
+    private func resumeAfterLogin() {
         if !completed, !resumedAfterLogin, let url = webView.url, request.isPostLoginLanding(url) {
             resumedAfterLogin = true
-            continueToApproval()
+            DispatchQueue.main.async { [weak self] in self?.continueToApproval() }
         }
     }
     func continueToApproval() {
@@ -149,7 +154,7 @@ struct UnraidSignInView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if let error = model.error { Text(error).foregroundStyle(.orange) }
                     Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")
-                    Button("Continue to approval") { model.continueToApproval() }.disabled(model.loading)
+                    Button("Continue to approval") { model.continueToApproval() }
                     Button("Use Safari instead") { openURL(model.request.authorizationURL(automaticReturn: false)) }
                     Text("In Safari, approve access, copy the generated key, then return to AsterOS and paste it. Website logins do not unlock native API requests through Cloudflare or Organizr.").foregroundStyle(.secondary)
                 }.font(.caption).padding().background(DockTheme.card)
