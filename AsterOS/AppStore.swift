@@ -56,6 +56,7 @@ import SwiftUI
     func addApp(name: String, address: String, containerID: String? = nil) throws {
         let url = try AddressPolicy.validate(address)
         guard let i = profiles.firstIndex(where: { $0.id == selectedID }) else { throw AppError.message("Connect a server before adding an app.") }
+        if let containerID { profiles[i].apps.removeAll { $0.containerID == containerID || ($0.containerID == nil && $0.name.caseInsensitiveCompare(name) == .orderedSame) } }
         profiles[i].apps.append(SavedApp(name: name.isEmpty ? (url.host ?? "App") : name, url: url, containerID: containerID)); persist()
     }
     func removeApp(_ id: UUID) {

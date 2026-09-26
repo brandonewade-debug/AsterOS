@@ -327,8 +327,18 @@ struct ContainerDetailsView: View {
                     Text(container.status).font(.callout)
                 }
                 Section {
-                    Button("Set app URL") { editing = true }.disabled(store.demo)
-                    Text("Set an HTTPS address to launch this app. A custom domain can be used when its local WebUI only supports HTTP.").font(.caption).foregroundStyle(.secondary)
+                    if let configured = container.webAddress(server: store.selected?.address) {
+                        LabeledContent("Unraid WebUI") { Text(configured.absoluteString).font(.caption).textSelection(.enabled) }
+                        Text("Tapping the app opens its configured Unraid WebUI unless you set an external URL override.").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Unraid has not supplied a usable WebUI for this container. Configure its WebUI in Unraid, or add an optional external URL.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Set external URL override") { editing = true }.disabled(store.demo)
+                    let overrides = (store.selected?.apps ?? []).filter { $0.containerID == container.id || ($0.containerID == nil && $0.name.caseInsensitiveCompare(container.name) == .orderedSame) }
+                    if let current = overrides.first {
+                        LabeledContent("External override") { Text(current.url.absoluteString).font(.caption).textSelection(.enabled) }
+                        Button("Use Unraid WebUI instead") { for app in overrides { store.removeApp(app.id) } }.disabled(store.demo)
+                    }
                 }
             }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                 .toolbar { Button("Done") { dismiss() } }
@@ -352,8 +362,8 @@ struct AddAppView: View {
             TextField("App name", text: $name)
             TextField("https://app.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             if let error { Text(error).foregroundStyle(.orange) }
-            Button("Add app") { do { try store.addApp(name: name, address: address, containerID: containerID); dismiss() } catch { self.error = error.localizedDescription } }.disabled(address.isEmpty)
-        }.navigationTitle("Add app").toolbar { Button("Cancel") { dismiss() } } }
+            Button(containerID == nil ? "Add app" : "Save override") { do { try store.addApp(name: name, address: address, containerID: containerID); dismiss() } catch { self.error = error.localizedDescription } }.disabled(address.isEmpty)
+        }.navigationTitle(containerID == nil ? "Add app" : "External URL override").toolbar { Button("Cancel") { dismiss() } } }
     }
 }
 struct PlannedView: View {

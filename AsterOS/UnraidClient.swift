@@ -61,6 +61,6 @@ final class UnraidClient {
         let _: ActionData = try await query("mutation ContainerAction($id: PrefixedID!) { docker { \(action.rawValue)(id: $id) { id } } }", variables: ["id": id])
     }
     static let overviewQuery = "query Overview { info { os { hostname release } cpu { brand cores } } array { state capacity { kilobytes { free used total } } disks { id name temp status } } }"
-    static let containersQuery = "query Containers { docker { containers { id names state status iconUrl webUiUrl labels } } }"
+    static let containersQuery = "query Containers { docker { containers { id names state status iconUrl webUiUrl labels ports { ip privatePort publicPort type } hostConfig { networkMode } networkSettings } } }"
     static let metricsQuery = "query Metrics { metrics { cpu { percentTotal } memory { percentTotal } } }"
 }

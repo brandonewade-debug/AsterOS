@@ -42,11 +42,11 @@ import Combine
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription; loading = false; sync() }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        if url.scheme == "https" || url.absoluteString == "about:blank" { decisionHandler(.allow) }
-        else { error = "This preview opens HTTPS pages only. Use Safari for external app links."; decisionHandler(.cancel) }
+        if AppWebPolicy.allows(url) || url.absoluteString == "about:blank" { decisionHandler(.allow) }
+        else { error = "This app link is not a supported HTTP or HTTPS address."; decisionHandler(.cancel) }
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, url.scheme == "https" { webView.load(navigationAction.request) }
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, AppWebPolicy.allows(url) { webView.load(navigationAction.request) }
         return nil
     }
 }

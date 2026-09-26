@@ -64,11 +64,25 @@ struct Capacity: Decodable {
 struct ArrayDisk: Decodable, Identifiable { var id: String; var name: String?; var temp: Int?; var status: String? }
 struct DockerData: Decodable { var docker: DockerList }
 struct DockerList: Decodable { var containers: [Container] }
+struct ContainerPort: Decodable {
+    var ip: String?
+    var privatePort: Int?
+    var publicPort: Int?
+    var type: String?
+}
+struct ContainerHostConfig: Decodable { var networkMode: String? }
+struct ContainerNetworks: Decodable {
+    struct Network: Decodable { var IPAddress: String? }
+    var Networks: [String: Network]?
+}
 struct Container: Decodable, Identifiable {
     var id: String; var names: [String]; var state: String; var status: String
     var iconUrl: String?
     var webUiUrl: String?
     var labels: [String: String]?
+    var ports: [ContainerPort]?
+    var hostConfig: ContainerHostConfig?
+    var networkSettings: ContainerNetworks?
     var name: String { (names.first ?? "Container").trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
 }
 extension Container {
@@ -76,7 +90,36 @@ extension Container {
         secureURL(iconUrl ?? labels?["net.unraid.docker.icon"], relativeTo: server)
     }
     func webAddress(server: URL?) -> URL? {
-        secureURL(webUiUrl ?? labels?["net.unraid.docker.webui"], relativeTo: server)
+        let template = labels?["net.unraid.docker.webui"]
+        // Resolve server-relative templates against the user's reachable server (including Tailscale).
+        if let template, template.contains("[IP]"), let url = resolveWebUI(template, server: server) { return url }
+        for value in [webUiUrl, template] {
+            if let value, let url = resolveWebUI(value, server: server) { return url }
+        }
+        return nil
+    }
+    private func resolveWebUI(_ value: String, server: URL?) -> URL? {
+        var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if value.contains("[IP]") {
+            let mode = hostConfig?.networkMode ?? ""
+            let customLAN = mode == "br0" || mode.hasPrefix("br0.") || mode == "eth0" || mode.hasPrefix("eth0.")
+            let host = customLAN ? networkSettings?.Networks?[mode]?.IPAddress : server?.host
+            guard let host, !host.isEmpty else { return nil }
+            value = value.replacingOccurrences(of: "[IP]", with: host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host)
+        }
+        let pattern = #"\[PORT:(\d+)\]"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
+        for match in expression.matches(in: value, range: NSRange(value.startIndex..., in: value)).reversed() {
+            guard let digits = Range(match.range(at: 1), in: value), let whole = Range(match.range, in: value), let port = Int(value[digits]), (1...65535).contains(port) else { return nil }
+            let mapped = ports?.first { $0.privatePort == port && $0.type?.uppercased() != "UDP" && $0.publicPort != nil }?.publicPort ?? port
+            guard (1...65535).contains(mapped) else { return nil }
+            value.replaceSubrange(whole, with: String(mapped))
+        }
+        guard !value.contains("[IP]"), !value.contains("[PORT"),
+              let url = URL(string: value, relativeTo: server)?.absoluteURL,
+              AppWebPolicy.allows(url) else { return nil }
+        return url
     }
     private func secureURL(_ value: String?, relativeTo server: URL?) -> URL? {
         guard let value, !value.isEmpty, !value.contains("["),
@@ -97,3 +140,12 @@ enum ContainerAction: String { case start, stop }
 struct ActionData: Decodable { var docker: ActionResult }
 struct ActionResult: Decodable { var start: ContainerIdentity?; var stop: ContainerIdentity? }
 struct ContainerIdentity: Decodable { var id: String }
+
+// Container web pages never receive the Unraid API key. Keep server/API validation HTTPS-only.
+enum AppWebPolicy {
+    static func allows(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return false }
+        return url.port.map { (1...65535).contains($0) } ?? true
+    }
+}

@@ -49,6 +49,35 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(recovered.matches(["photo.HEIC": 12, "paired.MOV": 30], asset: "edited-asset"))
     }
 
+    func testContainerWebUIUsesConfiguredURLAndMappedTemplatePorts() {
+        let server = URL(string: "https://unraid.example.ts.net:4443")!
+        var container = Container(id: "test", names: ["/App"], state: "RUNNING", status: "", webUiUrl: "http://192.168.1.209:8096/web")
+        XCTAssertEqual(container.webAddress(server: server)?.absoluteString, "http://192.168.1.209:8096/web")
+        container.labels = ["net.unraid.docker.webui": "http://[IP]:[PORT:8080]/web?view=home#top"]
+        container.ports = [ContainerPort(privatePort: 8080, publicPort: 8096, type: "TCP")]
+        container.hostConfig = ContainerHostConfig(networkMode: "bridge")
+        XCTAssertEqual(container.webAddress(server: server)?.absoluteString, "http://unraid.example.ts.net:8096/web?view=home#top")
+        container.hostConfig = ContainerHostConfig(networkMode: "br0")
+        container.networkSettings = ContainerNetworks(Networks: ["br0": .init(IPAddress: "192.168.1.50")])
+        XCTAssertEqual(container.webAddress(server: server)?.host, "192.168.1.50")
+        container.labels = nil
+        container.webUiUrl = "https://app.example.com/login"
+        XCTAssertEqual(container.webAddress(server: server)?.absoluteString, "https://app.example.com/login")
+        container.webUiUrl = ""
+        container.labels = ["net.unraid.docker.webui": "http://tower:8080"]
+        XCTAssertEqual(container.webAddress(server: server)?.absoluteString, "http://tower:8080")
+    }
+
+    func testWebUIRejectsCredentialsAndNonWebSchemesWithoutRelaxingAPI() {
+        for value in ["file:///etc/passwd", "javascript:alert(1)", "https://user:secret@example.com", "ftp://example.com"] {
+            XCTAssertFalse(AppWebPolicy.allows(URL(string: value)!))
+        }
+        XCTAssertTrue(AppWebPolicy.allows(URL(string: "http://tower:8080")!))
+        XCTAssertThrowsError(try AddressPolicy.validate("http://tower:8080"))
+        let container = Container(id: "test", names: [], state: "RUNNING", status: "", webUiUrl: "http://[IP]:[PORT:99999]")
+        XCTAssertNil(container.webAddress(server: URL(string: "https://tower")))
+    }
+
     func testBackupReceiptRequiresEveryResourceAndSafeNames() {
         let receipt = PhotoBackupReceipt(version: 1, asset: "asset", files: [.init(name: "photo.heic", size: 12), .init(name: "paired.mov", size: 30)])
         XCTAssertTrue(receipt.matches(["photo.heic": 12, "paired.mov": 30], asset: "asset"))
