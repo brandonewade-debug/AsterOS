@@ -7,11 +7,13 @@ import Combine
 struct UnraidAuthorization: Identifiable {
     let id = UUID()
     let server: URL
+    let profileID: UUID
     let state = UUID().uuidString + UUID().uuidString
     let created = Date()
     let allowDockerManagement: Bool
     var callback: URL { server.appendingPathComponent("asteros-authorization/\(id.uuidString)/callback") }
-    init(address: String, allowDockerManagement: Bool) throws {
+    init(address: String, allowDockerManagement: Bool, profileID: UUID = UUID()) throws {
+        self.profileID = profileID
         var url = try AddressPolicy.validate(address)
         if url.lastPathComponent == "graphql" { url.deleteLastPathComponent() }
         server = url
@@ -71,7 +73,7 @@ struct UnraidAuthorization: Identifiable {
         self.request = request
         host = (request.server.host ?? "Unraid") + (request.server.port.map { ":\($0)" } ?? "")
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = CatalogSession.dataStore(serverID: request.profileID)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         routeObserver = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
