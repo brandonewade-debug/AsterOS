@@ -13,8 +13,7 @@ struct Panel<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(DockTheme.card, in: RoundedRectangle(cornerRadius: 26))
-            .overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.09)))
+            .asterGlass()
     }
 }
 enum AppTab: String { case server, files, photos, apps, settings }
@@ -102,10 +101,10 @@ struct DashboardView: View {
                             Text(vpn.status).font(.caption).foregroundStyle(.secondary)
                             NavigationLink("Private connection settings") { TailnetSetupView() }
                         } else if store.loading { ProgressView("Loading your server…").frame(maxWidth: .infinity) }
-                        else { Button("Retry server connection") { Task { await store.refresh() } }.buttonStyle(.borderedProminent) }
-                    } else { Button("Connect a server") { setup = true }.buttonStyle(.borderedProminent) }
+                        else { Button("Retry server connection") { Task { await store.refresh() } }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule) }
+                    } else { Button("Connect a server") { setup = true }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule) }
                 }.padding(20).frame(maxWidth: 900)
-            }.frame(maxWidth: .infinity).background(DockTheme.background)
+            }.frame(maxWidth: .infinity).background { AsterBackdrop() }
                 .navigationTitle("AsterOS")
                 .toolbar { Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(store.loading || store.demo || store.selected == nil).accessibilityLabel("Refresh server") }
                 .refreshable { await store.refresh() }.sheet(isPresented: $setup) { ConnectionView() }
@@ -113,13 +112,11 @@ struct DashboardView: View {
     }
     private func percent(_ value: Double?) -> String { value.map { "\(Int(min(100, max(0, $0))))%" } ?? "—" }
     private func metric(_ title: String, value: String, subtitle: String, symbol: String) -> some View {
-        Panel {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
                 Label(title, systemImage: symbol).foregroundStyle(.secondary)
                 Text(value).font(.system(.title, design: .rounded).bold()).foregroundStyle(.mint)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }.frame(maxWidth: .infinity, minHeight: 115, alignment: .leading)
-        }
+            }.frame(maxWidth: .infinity, minHeight: 115, alignment: .leading).padding(16)
     }
 }
 struct ConnectionView: View {
@@ -135,7 +132,7 @@ struct ConnectionView: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section {
                     HStack(spacing: 12) {
                         Image("BrandMark").resizable().scaledToFit().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -198,81 +195,6 @@ struct ConnectionView: View {
         }
     }
 }
-struct AppsView: View {
-    @EnvironmentObject var store: AppStore
-    @State private var adding = false
-    @State private var opened: SavedApp?
-    @State private var pending: Container?
-    @State private var details: Container?
-    private let columns = [GridItem(.adaptive(minimum: 72, maximum: 96), spacing: 18)]
-    private func shortcut(for container: Container) -> SavedApp? {
-        store.selected?.apps.first { $0.containerID == container.id || ($0.containerID == nil && $0.name.caseInsensitiveCompare(container.name) == .orderedSame) }
-    }
-    private func launch(_ container: Container) {
-        guard !store.demo else { details = container; return }
-        if let app = shortcut(for: container) { opened = app }
-        else if let url = container.webAddress(server: store.selected?.address) { opened = SavedApp(name: container.name, url: url, containerID: container.id) }
-        else { details = container }
-    }
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    if store.demo { Text("Demo apps • Sample data").font(.caption).foregroundStyle(.orange) }
-                    if let error = store.dockerError { Text(error).font(.callout).foregroundStyle(.orange) }
-                    if store.containers.isEmpty && store.dockerError == nil {
-                        ContentUnavailableView("No apps loaded", systemImage: "square.grid.2x2", description: Text("Connect your Unraid server to see its Docker apps here."))
-                    }
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 30) {
-                        ForEach(store.containers) { container in
-                            Button { launch(container) } label: {
-                                VStack(spacing: 10) {
-                                    ContainerIcon(container: container, server: store.selected?.address)
-                                    Text(container.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.center).lineLimit(2).frame(height: 34, alignment: .top)
-                                }.frame(maxWidth: .infinity)
-                            }.buttonStyle(.plain)
-                            .accessibilityLabel("\(container.name), \(container.state.lowercased())")
-                            .contextMenu {
-                                Button("Open app", systemImage: "arrow.up.forward.app") { launch(container) }.disabled(store.demo)
-                                Button("App details", systemImage: "info.circle") { details = container }
-                                if container.state == "RUNNING" || container.state == "EXITED" {
-                                    Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating)
-                                }
-                            }
-                        }
-                    }
-                    let extras = (store.selected?.apps ?? []).filter { app in !store.containers.contains { shortcut(for: $0)?.id == app.id } }
-                    if !extras.isEmpty {
-                        Text("Shortcuts").font(.headline).foregroundStyle(.secondary)
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 30) {
-                            ForEach(extras) { app in
-                                Button { opened = app } label: {
-                                    VStack(spacing: 10) {
-                                        Image(systemName: app.symbol).font(.largeTitle).frame(width: 72, height: 72).background(.mint.opacity(0.15), in: RoundedRectangle(cornerRadius: 18))
-                                        Text(app.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.center).lineLimit(2).frame(height: 34, alignment: .top)
-                                    }.frame(maxWidth: .infinity)
-                                }.buttonStyle(.plain).contextMenu { Button("Remove shortcut", role: .destructive) { store.removeApp(app.id) } }
-                            }
-                        }
-                    }
-                }.padding(.horizontal, 20).padding(.vertical, 24).frame(maxWidth: 900)
-            }.frame(maxWidth: .infinity).background(DockTheme.background).navigationTitle("Apps")
-                .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.disabled(store.selected == nil || store.demo).accessibilityLabel("Add app shortcut") }
-                .sheet(isPresented: $adding) { AddAppView() }
-                .sheet(item: $details) { container in ContainerDetailsView(container: container) }
-                .fullScreenCover(item: $opened) { AppBrowser(app: $0) }
-                .confirmationDialog("Change container state?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible) {
-                    if let container = pending {
-                        Button("\(container.state == "RUNNING" ? "Stop" : "Start") \(container.name)") {
-                            pending = nil
-                            Task { await store.perform(container.state == "RUNNING" ? .stop : .start, container: container) }
-                        }
-                    }
-                } message: { Text("Stopping an app interrupts its active connections and work.") }
-                .refreshable { await store.refresh() }
-        }
-    }
-}
 struct ContainerIcon: View {
     let container: Container
     let server: URL?
@@ -315,7 +237,7 @@ struct ContainerDetailsView: View {
     @State private var editing = false
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section {
                     HStack(spacing: 18) {
                         ContainerIcon(container: container, server: store.selected?.address)
@@ -358,7 +280,7 @@ struct AddAppView: View {
     @State private var address = ""
     @State private var error: String?
     var body: some View {
-        NavigationStack { Form {
+        NavigationStack { GlassForm {
             TextField("App name", text: $name)
             TextField("https://app.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             if let error { Text(error).foregroundStyle(.orange) }
@@ -369,7 +291,7 @@ struct AddAppView: View {
 struct PlannedView: View {
     let title: String; let symbol: String; let detail: String
     var body: some View {
-        NavigationStack { ContentUnavailableView { Label(title, systemImage: symbol) } description: { Text(detail) }.background(DockTheme.background).navigationTitle(title) }
+        NavigationStack { ContentUnavailableView { Label(title, systemImage: symbol) } description: { Text(detail) }.background { AsterBackdrop() }.navigationTitle(title) }
     }
 }
 struct SettingsView: View {
@@ -379,7 +301,7 @@ struct SettingsView: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section("Servers") {
                     ForEach(store.profiles) { profile in
                         Button { store.select(profile.id) } label: { HStack { Text(profile.name); Spacer(); if store.selectedID == profile.id { Image(systemName: "checkmark") } } }
@@ -393,10 +315,10 @@ struct SettingsView: View {
                 }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
-                    Text("0.1.0 • Development foundation")
-                    Text("Photo backup, automatic routing, notifications, Face ID lock, app installation, and terminal access are not implemented yet.").foregroundStyle(.secondary)
+                    Text("0.1.0 • Preview")
+                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Notifications, Face ID lock, app installation and terminal access are still planned.").foregroundStyle(.secondary)
                 }
-                Section("Privacy") { Text("Server keys stay in the device Keychain. This build has no analytics, cloud account, relay service, or photo uploads. App browser cookies are kept only for the current browser session.") }
+                Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. App browser cookies are kept only for the current browser session.") }
                 if let error { Text(error).foregroundStyle(.orange) }
             }.navigationTitle("Settings").sheet(isPresented: $adding) { ConnectionView() }
                 .confirmationDialog("Remove this connection and its saved API key?", isPresented: $removing, titleVisibility: .visible) {

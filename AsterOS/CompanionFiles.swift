@@ -214,7 +214,7 @@ struct CompanionPairView: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section("AsterOS Companion") {
                     TextField("https://companion.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("One-time pairing code", text: $code).textInputAutocapitalization(.never).autocorrectionDisabled()

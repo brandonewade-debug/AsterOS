@@ -342,7 +342,7 @@ struct PhotoBackupView: View {
     init(server: ServerProfile) { self.server = server; _backup = StateObject(wrappedValue: PhotoBackupStore(serverID: server.id)) }
     var body: some View {
         NavigationStack {
-            Form {
+            GlassForm {
                 Section {
                     Label("Your photos. Your server.", systemImage: "photo.on.rectangle.angled").font(.title2.bold())
                     Text("Copy photos, videos and Live Photo resources to \(server.name). Originals stay on your iPhone.").foregroundStyle(.secondary)

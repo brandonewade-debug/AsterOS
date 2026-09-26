@@ -79,7 +79,7 @@ struct AppBrowser: View {
                         Button { openURL(model.webView.url ?? app.url) } label: { Image(systemName: "safari") }.accessibilityLabel("Open in Safari")
                         Button { model.webView.reload() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("Reload")
                     }
-                }.padding(20).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28)).padding(10)
+                }.padding(20).asterGlass(radius: 36).padding(12)
             }
     }
 }
