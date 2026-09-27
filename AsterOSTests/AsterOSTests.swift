@@ -26,6 +26,69 @@ final class AsterOSTests: XCTestCase {
         CatalogSession.forget(serverID: otherID)
     }
 
+    @MainActor func testShareAccountReferenceSurvivesReconnectionAndForgetClearsAliases() throws {
+        let suite = "AsterOS-share-settings-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let a = UUID(), b = UUID()
+        let address = URL(string: "https://tower.example:4443")!
+        let connection = ShareConnection(host: "tower.example", username: "photos")
+        try ShareSettings.save(connection, serverID: a, address: address, defaults: defaults)
+        XCTAssertEqual(ShareSettings.load(serverID: b, address: address, defaults: defaults)?.id, connection.id)
+        XCTAssertNil(ShareSettings.load(serverID: UUID(), address: URL(string: "https://other.example")!, defaults: defaults))
+        let replacement = ShareConnection(host: "tower.example", username: "updated")
+        try ShareSettings.save(replacement, serverID: b, address: address, defaults: defaults)
+        XCTAssertEqual(ShareSettings.load(serverID: a, address: nil, defaults: defaults)?.id, replacement.id)
+        for key in ShareSettings.keys(for: replacement.id, defaults: defaults) { defaults.removeObject(forKey: key) }
+        XCTAssertNil(ShareSettings.load(serverID: a, address: address, defaults: defaults))
+        XCTAssertNil(ShareSettings.load(serverID: b, address: address, defaults: defaults))
+    }
+
+    @MainActor func testPhotoDestinationPathsStayInsideShare() throws {
+        XCTAssertEqual(try PhotoDestinationPolicy.components(""), [])
+        XCTAssertEqual(try PhotoDestinationPolicy.components("Backups/My Photos"), ["Backups", "My Photos"])
+        for bad in ["/Photos", "Photos/", "../Photos", "Photos/../Other", "Photos//Other", "Photos\\Other", ".", "Photos/.."] {
+            XCTAssertThrowsError(try PhotoDestinationPolicy.components(bad), bad)
+        }
+    }
+    @MainActor func testPhotoDestinationAndCheckpointSurviveReconnection() throws {
+        let suite = "AsterOS-photo-destination-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let old = UUID(), current = UUID(), next = UUID()
+        let legacy = "photoBackup-" + old.uuidString
+        defaults.set(["share": "AsterOS", "folder": "AsterOS ICloud Photo Backup"], forKey: legacy)
+        defaults.set("daily", forKey: legacy + "-layout")
+        defaults.set("America/Chicago", forKey: legacy + "-timeZone")
+        let checkpoint = PhotoBackupCheckpoint(share: "AsterOS", folder: "AsterOS ICloud Photo Backup", completed: 314, total: 25270, finished: false)
+        defaults.set(try JSONEncoder().encode(checkpoint), forKey: legacy + "-checkpoint")
+        let address = URL(string: "https://tower.example:4443")!
+        let store = PhotoBackupStore(serverID: current, address: address, knownServerIDs: [current], defaults: defaults)
+        XCTAssertEqual(store.completed, 314)
+        XCTAssertEqual(store.folder, checkpoint.folder)
+        XCTAssertEqual(store.layout, .daily)
+        store.folder = "Backups/Family"
+        let restarted = PhotoBackupStore(serverID: next, address: address, knownServerIDs: [next], defaults: defaults)
+        XCTAssertEqual(restarted.folder, "Backups/Family", "Selection is saved before any upload starts")
+        XCTAssertEqual(restarted.completed, 0, "Do not show progress from a different destination")
+        restarted.folder = checkpoint.folder
+        XCTAssertEqual(restarted.completed, 314)
+        let key = PhotoDestinationPolicy.settingsKey(serverID: next, address: address, knownServerIDs: [next], defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: key + "-timeZone"), "America/Chicago")
+        XCTAssertNotNil(defaults.object(forKey: legacy), "Keep recovery source")
+        restarted.folder = ""
+        XCTAssertEqual(PhotoBackupStore(serverID: next, address: address, defaults: defaults).folder, "")
+    }
+    @MainActor func testPhotoSettingsDoNotGuessBetweenLegacyDestinations() {
+        let suite = "AsterOS-photo-isolation-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for _ in 0..<2 { defaults.set(["share": "Old", "folder": "Photos"], forKey: "photoBackup-" + UUID().uuidString) }
+        let id = UUID()
+        let key = PhotoDestinationPolicy.settingsKey(serverID: id, address: URL(string: "https://different.example")!, knownServerIDs: [id], defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: key))
+    }
+
     func testPhotoFoldersAreReadableStableAndPathSafe() throws {
         let date = ISO8601DateFormatter().date(from: "2026-09-26T16:31:00Z")!
         let zone = TimeZone(secondsFromGMT: 0)!
