@@ -30,15 +30,26 @@ struct ContainerEditorView: View {
     let target: ContainerEditorTarget
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: CatalogBrowserModel
+    @State private var signIn = false
+    @State private var closeEditor = false
     init(target: ContainerEditorTarget) {
         self.target = target
         _model = StateObject(wrappedValue: CatalogBrowserModel(server: target.server.address, serverID: target.server.id, editingContainer: target.container.name))
     }
     var body: some View {
         NavigationStack {
-            UnraidAppStoreView(server: target.server, model: model)
+            ZStack {
+                if !signIn { CatalogSurface(model: model).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
+                if model.needsCatalogLogin {
+                    GlassForm { Section { Text("Your server session needs to be renewed."); Button("Sign in to server") { signIn = true } } }
+                } else { NativeContainerForm(model: model) }
+            }
                 .navigationTitle("Edit " + target.container.name).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { if model.nativeEditor != nil { closeEditor = true } else { dismiss() } }.disabled(model.applyingConfiguration) } }
+                .confirmationDialog("Close without applying?", isPresented: $closeEditor, titleVisibility: .visible) { Button("Discard unapplied changes", role: .destructive) { dismiss() } }
+                .sheet(isPresented: $signIn) { NavigationStack { UnraidAppStoreView(server: target.server, model: model).toolbar { Button("Done") { signIn = false } } } }
+                .onChange(of: model.nativeEditor != nil) { _, ready in if ready { signIn = false } }
+                .interactiveDismissDisabled(model.applyingConfiguration)
                 .onAppear { model.resumeCatalog() }
                 .onDisappear { model.stopCatalogObservation(); model.stop() }
         }
@@ -124,6 +135,10 @@ struct CatalogDialog {
     var startPage: URL { editingContainer == nil ? catalog : catalog.deletingLastPathComponent().appendingPathComponent("Docker") }
     @Published private(set) var editorAdvanced: Bool?
     @Published private(set) var changingEditorMode = false
+    @Published private(set) var nativeEditor: EditorForm?
+    @Published private(set) var editingConfiguration = false
+    @Published private(set) var applyingConfiguration = false
+    @Published private(set) var configurationResult: String?
     private var editorOpened = false
     private let serverID: UUID
     private var cacheable = true
@@ -174,6 +189,8 @@ struct CatalogDialog {
         startCatalogObservation()
     }
     func openCatalog() {
+        guard !applyingConfiguration else { return }
+        nativeEditor = nil; configurationResult = nil
         error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = editingContainer == nil; editorOpened = false; editorAdvanced = nil
         catalogDeadline?.cancel()
         catalogDeadline = Task { [weak self] in
@@ -207,12 +224,12 @@ struct CatalogDialog {
             while !Task.isCancelled {
                 await self?.readEditorState()
                 await self?.readNativeCatalog()
-                do { try await Task.sleep(for: .milliseconds(self?.catalogLive == true ? 1500 : 300)) } catch { break }
+                do { try await Task.sleep(for: .milliseconds((self?.catalogLive == true || self?.nativeEditor != nil) ? 1500 : 300)) } catch { break }
             }
         }
     }
     func stopCatalogObservation() { catalogObservation?.cancel(); catalogObservation = nil }
-    private var onEditor: Bool {
+    var onEditor: Bool {
         guard let url = webView.url, CatalogPolicy.sameOrigin(url, catalog) else { return false }
         let base = catalog.deletingLastPathComponent()
         return ["Docker/AddContainer", "Docker/UpdateContainer", "Apps/AddContainer", "Apps/UpdateContainer"].contains { base.appendingPathComponent($0).path == url.path }
@@ -224,7 +241,10 @@ struct CatalogDialog {
                 let state = try await webView.callAsyncJavaScript(ContainerEditorBridge.state, arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
                 guard !Task.isCancelled, onEditor else { return }
                 editorAdvanced = state?["advanced"] as? Bool
-                if editorAdvanced != nil { catalogDeadline?.cancel(); catalogRefreshing = false }
+                if editorAdvanced != nil {
+                    catalogDeadline?.cancel(); catalogRefreshing = false; needsCatalogLogin = false; sawLogin = false
+                    if !editingConfiguration && !applyingConfiguration && configurationResult == nil { await refreshNativeEditor() }
+                }
             } catch { editorAdvanced = nil }
         } else {
             editorAdvanced = nil
@@ -237,14 +257,54 @@ struct CatalogDialog {
         }
     }
     func setEditorAdvanced(_ advanced: Bool) async {
-        guard onEditor, editorAdvanced != nil, !changingEditorMode else { return }
+        guard onEditor, editorAdvanced != nil, !changingEditorMode, !editingConfiguration, !applyingConfiguration else { return }
         changingEditorMode = true
         defer { changingEditorMode = false }
         do {
             let changed = try await webView.callAsyncJavaScript(ContainerEditorBridge.setAdvanced, arguments: ["advanced": advanced], in: nil, contentWorld: .page) as? Bool
-            if changed == true { editorAdvanced = advanced }
+            if changed == true { editorAdvanced = advanced; await refreshNativeEditor() }
             else { error = "Use the server's Basic/Advanced View switch for this editor version." }
         } catch { self.error = "Could not change the editor view. Your form has not been submitted." }
+    }
+    func refreshNativeEditor() async {
+        guard onEditor, !applyingConfiguration else { return }
+        do {
+            if let json = try await webView.callAsyncJavaScript(NativeEditorBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as? String,
+               let data = json.data(using: .utf8), data.count < 2_000_000, onEditor, !applyingConfiguration, configurationResult == nil {
+                nativeEditor = try JSONDecoder().decode(EditorForm.self, from: data)
+            }
+        } catch { self.error = "Could not read the container configuration. Your settings have not been applied." }
+    }
+    @discardableResult func updateEditorField(_ field: EditorField, value: String = "", checked: Bool = false, values: [String] = []) async -> Bool {
+        await mutateEditor(NativeEditorBridge.update, arguments: ["fieldID": field.id, "value": value, "checked": checked, "values": values])
+    }
+    func performEditorAction(_ action: EditorAction) async {
+        _ = await mutateEditor(NativeEditorBridge.action, arguments: ["actionID": action.id])
+    }
+    private func mutateEditor(_ script: String, arguments: [String: Any]) async -> Bool {
+        guard onEditor, !editingConfiguration, !applyingConfiguration else { return false }
+        editingConfiguration = true; error = nil
+        defer { editingConfiguration = false }
+        do {
+            guard let message = try await webView.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page) as? String else { error = "The editor is no longer available. Reopen it before changing settings."; return false }
+            guard message.isEmpty else { error = message; return false }
+            await refreshNativeEditor()
+            return true
+        } catch { self.error = "Could not update this field. Your configuration has not been applied."; return false }
+    }
+    func applyEditorConfiguration() async {
+        guard onEditor, nativeEditor != nil, !editingConfiguration, !applyingConfiguration else { return }
+        applyingConfiguration = true; error = nil
+        do {
+            guard let message = try await webView.callAsyncJavaScript(NativeEditorBridge.apply, arguments: [:], in: nil, contentWorld: .page) as? String else {
+                applyingConfiguration = false; error = "The configuration form is unavailable. Nothing was submitted."; return
+            }
+            if !message.isEmpty { applyingConfiguration = false; error = message }
+        } catch {
+            // Navigation may interrupt the bridge after submission. Never automatically retry.
+            applyingConfiguration = false; nativeEditor = nil
+            configurationResult = "The apply result could not be confirmed."
+        }
     }
     private func readNativeCatalog() async {
         guard onCatalog else { return }
@@ -313,10 +373,18 @@ struct CatalogDialog {
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
             self?.error = "The server is taking a while to respond. If an installation was submitted, check your Apps grid before retrying it."
             self?.loading = false // Do not cancel an installer or replay its POST.
+            if self?.applyingConfiguration == true {
+                self?.applyingConfiguration = false; self?.nativeEditor = nil
+                self?.configurationResult = "The server has not confirmed the result yet. Check the container before retrying."
+            }
         }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         timeout?.cancel(); loading = false; canGoBack = webView.canGoBack
+        if applyingConfiguration {
+            applyingConfiguration = false; nativeEditor = nil
+            configurationResult = "Unraid finished responding to the configuration request. Verify the container in Apps."
+        }
         guard let url = webView.url else { return }
         host = url.host ?? ""
         if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; editorOpened = false; needsCatalogLogin = true; catalogLive = false; catalogRefreshing = false; catalogDeadline?.cancel() }
@@ -328,6 +396,9 @@ struct CatalogDialog {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
     private func fail(_ error: Error) {
         timeout?.cancel(); loading = false; catalogRefreshing = false; catalogDeadline?.cancel()
+        if applyingConfiguration && (error as NSError).code != NSURLErrorCancelled {
+            applyingConfiguration = false; nativeEditor = nil; configurationResult = "The apply result could not be confirmed."
+        }
         if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load the server App Store (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -370,7 +441,6 @@ struct UnraidAppStoreView: View {
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 20) }
             CatalogSurface(model: model).clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous)).padding(.horizontal, 8)
         }.background { AsterBackdrop() }
-        .onDisappear { model.stop() }
         .alert(model.dialog?.host ?? "Server", isPresented: Binding(get: { model.dialog != nil }, set: { if !$0 { model.answerDialog(false) } })) {
             if model.dialog?.confirm == true {
                 Button("Continue") { model.answerDialog(true) }

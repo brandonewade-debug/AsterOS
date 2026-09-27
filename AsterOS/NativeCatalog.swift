@@ -115,6 +115,7 @@ struct NativeAppStoreView: View {
     @State private var selected: CatalogApp?
     @State private var showServer = false
     @State private var loginOnly = false
+    @State private var discardEditor = false
     @State private var category = "All"
     private var categories: [String] { ["All"] + Array(Set(model.catalogItems.map(\.category).filter { !$0.isEmpty })).sorted() }
     private var visible: [CatalogApp] { model.catalogItems.filter { category == "All" || $0.category == category } }
@@ -123,7 +124,12 @@ struct NativeAppStoreView: View {
             ZStack {
                 AsterBackdrop()
                 if showServer {
-                    UnraidAppStoreView(server: server, model: model)
+                    if model.nativeEditor != nil || model.applyingConfiguration || model.configurationResult != nil {
+                        ZStack {
+                            CatalogSurface(model: model).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+                            NativeContainerForm(model: model)
+                        }
+                    } else { UnraidAppStoreView(server: server, model: model) }
                 } else {
                     CatalogSurface(model: model).frame(maxWidth: .infinity, maxHeight: .infinity).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
                     ScrollView {
@@ -188,15 +194,17 @@ struct NativeAppStoreView: View {
                         }.padding(24).frame(maxWidth: 760).frame(maxWidth: .infinity)
                     }.refreshable { query = ""; category = "All"; model.openCatalog() }
                 }
-            }.navigationTitle(showServer ? "Unraid installer" : "App Store").navigationBarTitleDisplayMode(showServer ? .inline : .large)
+            }.navigationTitle(showServer ? (model.nativeEditor != nil ? "Configure app" : "App requirements") : "App Store").navigationBarTitleDisplayMode(showServer ? .inline : .large)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(showServer ? "Catalog" : "Done") { if showServer { showServer = false; loginOnly = false; model.openCatalog() } else { dismiss() } }
+                        Button(showServer ? "Catalog" : "Done") { if showServer { if model.nativeEditor != nil { discardEditor = true } else { showServer = false; loginOnly = false; model.openCatalog() } } else { dismiss() } }.disabled(model.applyingConfiguration)
                     }
                     ToolbarItem(placement: .primaryAction) {
                         if !showServer { Button { loginOnly = false; showServer = true } label: { Image(systemName: "globe") }.accessibilityLabel("Open server installer") }
                     }
                 }
+                .interactiveDismissDisabled(model.applyingConfiguration || model.nativeEditor != nil)
+                .confirmationDialog("Discard unapplied changes?", isPresented: $discardEditor, titleVisibility: .visible) { Button("Discard changes", role: .destructive) { showServer = false; loginOnly = false; model.openCatalog() } }
                 .sheet(item: $selected) { app in
                     NavigationStack {
                         ScrollView {
@@ -210,7 +218,7 @@ struct NativeAppStoreView: View {
                                     Task { await model.reviewCatalogApp(app) }
                                 }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(!model.catalogLive || model.catalogBusy)
                                 if !model.catalogLive { Text("Installation becomes available when the live catalog is ready.").font(.caption).foregroundStyle(.secondary) }
-                                Text("Review compatibility notes, ports and storage paths in the server installer before applying. Nothing installs when you browse or open these details.").font(.caption).foregroundStyle(.secondary)
+                                Text("Review the app’s requirements, then configure its ports, paths and settings in AsterOS before installing.").font(.caption).foregroundStyle(.secondary)
                             }.padding(24)
                         }.background { AsterBackdrop() }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                             .toolbar { Button("Done") { selected = nil } }
