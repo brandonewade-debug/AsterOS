@@ -65,6 +65,7 @@ enum CatalogPolicy {
     }
     static func forget(serverID: UUID) throws {
         try ServerWebSession.forget(serverID)
+        CatalogCache.forget(serverID)
         dataStore(serverID: serverID).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { }
     }
 }
@@ -77,6 +78,13 @@ struct CatalogDialog {
 @MainActor final class CatalogBrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     let catalog: URL
+    private let serverID: UUID
+    private var cacheable = true
+    private var lastCachedItems: [CatalogApp]?
+    private var connectionRevision = UUID()
+    private var catalogDeadline: Task<Void, Never>?
+    @Published private(set) var catalogLive = false
+    @Published private(set) var catalogRefreshing = true
     let session: ServerWebSession
     @Published var catalogItems: [CatalogApp] = []
     @Published var catalogReady = false
@@ -95,13 +103,17 @@ struct CatalogDialog {
     private var timeout: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
     init(server: URL, serverID: UUID) {
+        self.serverID = serverID
         catalog = CatalogPolicy.url(server: server)
         let config = WKWebViewConfiguration()
         // The server owns its login and install forms. No API keys or password scraping.
         config.websiteDataStore = CatalogSession.dataStore(serverID: serverID)
         session = ServerWebSession(serverID: serverID, server: server, dataStore: config.websiteDataStore)
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 780), configuration: config)
         super.init()
+        if let saved = CatalogCache.load(serverID: serverID, address: catalog) {
+            catalogItems = saved.items; lastCachedItems = saved.items; catalogReady = true
+        }
         session.onError = { [weak self] message in self?.error = message }
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -110,14 +122,23 @@ struct CatalogDialog {
         }
     }
     func resumeCatalog() {
-        if webView.url == nil || !onCatalog || (!catalogReady && !webView.isLoading && !needsCatalogLogin) { openCatalog() }
+        if connectionTask == nil && (webView.url == nil || !onCatalog || (!catalogLive && !webView.isLoading && !needsCatalogLogin)) { openCatalog() }
         startCatalogObservation()
     }
     func openCatalog() {
-        error = nil; loading = true; catalogReady = false; catalogItems = []; needsCatalogLogin = false
+        error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = true
+        catalogDeadline?.cancel()
+        catalogDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, !catalogLive else { return }
+            catalogRefreshing = false
+            error = "Your server is still preparing Community Applications. Retry or check the server view."
+        }
         connectionTask?.cancel()
+        let revision = UUID(); connectionRevision = revision
         connectionTask = Task { [weak self] in
             guard let self else { return }
+            defer { if connectionRevision == revision { connectionTask = nil } }
             do {
                 try await session.restore()
                 let proxies = try await TailnetStore.shared.prepare(for: catalog.host)
@@ -125,7 +146,7 @@ struct CatalogDialog {
                 webView.configuration.websiteDataStore.proxyConfigurations = proxies
                 webView.load(URLRequest(url: catalog))
             } catch is CancellationError { return }
-            catch { self.error = error.localizedDescription; self.loading = false }
+            catch { self.error = error.localizedDescription; self.loading = false; self.catalogRefreshing = false; self.catalogDeadline?.cancel() }
         }
     }
     private var onCatalog: Bool {
@@ -137,7 +158,7 @@ struct CatalogDialog {
         catalogObservation = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.readNativeCatalog()
-                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                do { try await Task.sleep(for: .milliseconds(self?.catalogLive == true ? 1500 : 300)) } catch { break }
             }
         }
     }
@@ -150,36 +171,47 @@ struct CatalogDialog {
             let page = try JSONDecoder().decode(NativeCatalogPage.self, from: bytes)
             guard !Task.isCancelled, onCatalog else { return }
             catalogBusy = page.busy
-            if page.ready && !page.busy {
-                catalogItems = page.items; catalogReady = true; needsCatalogLogin = false
-                loading = false; timeout?.cancel()
+            if page.ready {
+                // Show cards as they arrive; installation stays gated until CA finishes.
+                let changed = catalogItems != page.items
+                if changed { catalogItems = page.items }
+                catalogReady = true; needsCatalogLogin = false
+                catalogLive = !page.busy; catalogRefreshing = page.busy
+                if !page.busy {
+                    loading = false; timeout?.cancel(); catalogDeadline?.cancel(); error = nil
+                    if cacheable && lastCachedItems != page.items {
+                        CatalogCache.save(page.items, serverID: serverID, address: catalog)
+                        lastCachedItems = page.items
+                    }
+                }
                 catalogNext = page.next; catalogPrevious = page.previous
             }
         } catch { /* Server view remains available if the plugin markup has changed. */ }
     }
     func searchCatalog(_ query: String) async {
-        guard onCatalog else { error = "Connect to the server catalog first."; return }
+        guard onCatalog, catalogLive else { return }
         let query = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         guard !query.isEmpty else { openCatalog(); return }
-        catalogBusy = true; error = nil
+        cacheable = false; catalogBusy = true; error = nil
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.search, arguments: ["query": query], in: nil, contentWorld: .page) as? Bool
             if ok != true { error = "Search is unavailable for this catalog version. Use the server view."; catalogBusy = false }
         } catch { self.error = "Could not search the server catalog."; catalogBusy = false }
     }
     func catalogPage(forward: Bool) async {
-        guard onCatalog else { return }
+        guard onCatalog, catalogLive else { return }
+        cacheable = false
         do { _ = try await webView.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": forward], in: nil, contentWorld: .page) }
         catch { self.error = "Could not load the next catalog page." }
     }
     func reviewCatalogApp(_ app: CatalogApp) async {
-        guard onCatalog else { error = "Return to the catalog and select the app again."; return }
+        guard onCatalog, catalogLive, !catalogBusy else { error = "Wait for the live catalog before reviewing installation."; return }
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": app.id], in: nil, contentWorld: .page) as? Bool
             if ok != true { error = "This catalog entry changed. Search for it in the server view." }
         } catch { self.error = "Could not open the server's app details." }
     }
-    func stop() { connectionTask?.cancel(); timeout?.cancel(); answerDialog(false); webView.stopLoading(); loading = false }
+    func stop() { connectionRevision = UUID(); connectionTask?.cancel(); connectionTask = nil; catalogDeadline?.cancel(); catalogRefreshing = false; timeout?.cancel(); answerDialog(false); webView.stopLoading(); loading = false }
     func answerDialog(_ accepted: Bool) {
         let pending = dialog; dialog = nil; pending?.complete(accepted)
     }
@@ -204,7 +236,7 @@ struct CatalogDialog {
         timeout?.cancel(); loading = false; canGoBack = webView.canGoBack
         guard let url = webView.url else { return }
         host = url.host ?? ""
-        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; needsCatalogLogin = true }
+        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; needsCatalogLogin = true; catalogLive = false; catalogRefreshing = false; catalogDeadline?.cancel() }
         if CatalogPolicy.returnAfterLogin(url, catalog: catalog, sawLogin: sawLogin) {
             sawLogin = false; webView.load(URLRequest(url: catalog))
         }
@@ -212,7 +244,7 @@ struct CatalogDialog {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
     private func fail(_ error: Error) {
-        timeout?.cancel(); loading = false
+        timeout?.cancel(); loading = false; catalogRefreshing = false; catalogDeadline?.cancel()
         if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load the server App Store (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

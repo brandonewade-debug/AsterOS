@@ -119,14 +119,18 @@ struct AppsView: View {
         store.containers.map { AppLaunchItem(container: $0, shortcut: shortcut(for: $0)) } +
         (store.selected?.apps ?? []).filter { app in !store.containers.contains { shortcut(for: $0)?.id == app.id } }.map { AppLaunchItem(shortcut: $0) }
     }
-    private func openStore() {
+    private func prepareStore() {
         guard let server = store.selected, !store.demo else { return }
         if catalogServerID != server.id || catalogModel?.catalog != CatalogPolicy.url(server: server.address) {
             catalogModel?.stopCatalogObservation(); catalogModel?.stop()
             catalogModel = CatalogBrowserModel(server: server.address, serverID: server.id)
             catalogServerID = server.id
         }
-        guard let catalogModel else { return }
+        catalogModel?.resumeCatalog()
+    }
+    private func openStore() {
+        prepareStore()
+        guard let server = store.selected, let catalogModel else { return }
         catalogPresentation = CatalogPresentation(server: server, model: catalogModel)
     }
     private func launch(_ item: AppLaunchItem) {
@@ -268,7 +272,9 @@ struct AppsView: View {
                 if catalogServerID != store.selectedID || store.demo {
                     catalogPresentation = nil; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil; catalogServerID = nil
                 }
+                prepareStore()
             }
+            .onDisappear { if catalogPresentation == nil { catalogModel?.stopCatalogObservation(); catalogModel?.stop() } }
         }
     }
 }
