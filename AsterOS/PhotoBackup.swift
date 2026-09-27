@@ -95,6 +95,7 @@ enum PhotoBackupPolicy {
     @Published private(set) var completed = 0 { didSet { reportExecution() } }
     @Published private(set) var total = 0 { didSet { reportExecution() } }
     @Published private(set) var progress: Double = 0 { didSet { reportExecution() } }
+    @Published private(set) var deferredDownloads = 0
     @Published private(set) var limited = false
     @Published var error: String?
     private let defaults: UserDefaults
@@ -228,6 +229,7 @@ enum PhotoBackupPolicy {
     func start(limit: Int? = nil, verifyExisting: Bool = false) {
         guard !busy else { return }
         runID = UUID()
+        deferredDownloads = 0
         busy = true; backingUp = true; paused = false; timedOut = false; error = nil; completed = 0; total = 0; progress = 0
         let destinationShare = share, destinationFolder = folder
         let destinationLayout = layout
@@ -309,129 +311,156 @@ enum PhotoBackupPolicy {
             completed = locallyCompleted
             progress = 0
             saveCheckpoint(share: share, folder: folder)
+            var consecutiveDownloadFailures = 0
             for (index, identity) in pending {
-                try check(); touch()
-                let asset = fetched.object(at: fetched.count - total + index)
-                let resources = PHAssetResource.assetResources(for: asset)
-                guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
-                let legacy = legacyFolders.contains(identity)
-                let destinations = PhotoBackupPolicy.destinations(date: asset.creationDate, layout: layout, isVideo: asset.mediaType == .video, timeZone: timeZone)
-                var components = legacy ? [identity] : destinations[0]
-                let receiptName = legacy ? "complete.json" : ".asteros-" + identity + ".json"
-                // Find completed or interrupted backups in either layout before creating anything.
-                if !legacy {
-                    for candidate in destinations {
-                        var candidatePath = folder
-                        var found = true
-                        for component in candidate {
-                            if cachedFolders[candidatePath] == nil {
-                                cachedFolders[candidatePath] = Set(try await client.listDirectory(path: candidatePath).filter(\.isDirectory).map(\.name))
-                            }
-                            guard cachedFolders[candidatePath, default: []].contains(component) else { found = false; break }
-                            candidatePath = try SharePolicy.child(component, in: candidatePath)
-                        }
-                        if found {
-                            if cachedSizes[candidatePath] == nil {
-                                cachedSizes[candidatePath] = Dictionary(try await client.listDirectory(path: candidatePath).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
-                            }
-                            let firstName = try PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: resources[0].originalFilename, identity: identity, index: 0, timeZone: timeZone)
-                            if cachedSizes[candidatePath]?[receiptName] != nil || cachedSizes[candidatePath]?[firstName] != nil {
-                                components = candidate; break
-                            }
-                        }
-                    }
-                }
-                var path = folder
-                status = "Checking item \(index + 1) of \(total)"
-                for component in components {
+                do {
                     try check(); touch()
-                    if cachedFolders[path] == nil { cachedFolders[path] = Set(try await client.listDirectory(path: path).filter(\.isDirectory).map(\.name)) }
-                    let next = try SharePolicy.child(component, in: path)
-                    if !cachedFolders[path, default: []].contains(component) {
-                        try await client.createDirectory(path: next)
-                        cachedFolders[path, default: []].insert(component)
-                        cachedFolders[next] = []
+                    let asset = fetched.object(at: fetched.count - total + index)
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
+                    let legacy = legacyFolders.contains(identity)
+                    let destinations = PhotoBackupPolicy.destinations(date: asset.creationDate, layout: layout, isVideo: asset.mediaType == .video, timeZone: timeZone)
+                    var components = legacy ? [identity] : destinations[0]
+                    let receiptName = legacy ? "complete.json" : ".asteros-" + identity + ".json"
+                    // Find completed or interrupted backups in either layout before creating anything.
+                    if !legacy {
+                        for candidate in destinations {
+                            var candidatePath = folder
+                            var found = true
+                            for component in candidate {
+                                if cachedFolders[candidatePath] == nil {
+                                    cachedFolders[candidatePath] = Set(try await client.listDirectory(path: candidatePath).filter(\.isDirectory).map(\.name))
+                                }
+                                guard cachedFolders[candidatePath, default: []].contains(component) else { found = false; break }
+                                candidatePath = try SharePolicy.child(component, in: candidatePath)
+                            }
+                            if found {
+                                if cachedSizes[candidatePath] == nil {
+                                    cachedSizes[candidatePath] = Dictionary(try await client.listDirectory(path: candidatePath).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
+                                }
+                                let firstName = try PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: resources[0].originalFilename, identity: identity, index: 0, timeZone: timeZone)
+                                if cachedSizes[candidatePath]?[receiptName] != nil || cachedSizes[candidatePath]?[firstName] != nil {
+                                    components = candidate; break
+                                }
+                            }
+                        }
                     }
-                    path = next
-                }
-                if cachedSizes[path] == nil {
-                    cachedSizes[path] = Dictionary(try await client.listDirectory(path: path).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
-                }
-                let sizes = cachedSizes[path] ?? [:]
-                if let receiptSize = sizes[receiptName] {
-                    guard receiptSize < 1_000_000 else { throw AppError.message("An existing backup receipt is invalid. Choose a new backup folder.") }
-                    let reader = client.fileReader(path: path + "/" + receiptName)
-                    let bytes: Data
-                    do { bytes = try await reader.read(offset: 0, length: 1_000_000); try await reader.close() }
-                    catch { try? await reader.close(); throw error }
-                    guard let receipt = try? JSONDecoder().decode(PhotoBackupReceipt.self, from: bytes), receipt.matches(sizes, asset: identity) else {
-                        throw AppError.message("A previous backup is missing files or has changed. Choose a new folder to make another complete copy; existing files were left untouched.")
+                    var path = folder
+                    status = "Checking item \(index + 1) of \(total)"
+                    for component in components {
+                        try check(); touch()
+                        if cachedFolders[path] == nil { cachedFolders[path] = Set(try await client.listDirectory(path: path).filter(\.isDirectory).map(\.name)) }
+                        let next = try SharePolicy.child(component, in: path)
+                        if !cachedFolders[path, default: []].contains(component) {
+                            try await client.createDirectory(path: next)
+                            cachedFolders[path, default: []].insert(component)
+                            cachedFolders[next] = []
+                        }
+                        path = next
                     }
-                    try check()
+                    if cachedSizes[path] == nil {
+                        cachedSizes[path] = Dictionary(try await client.listDirectory(path: path).filter { !$0.isDirectory }.map { ($0.name, $0.size) }, uniquingKeysWith: { a, _ in a })
+                    }
+                    let sizes = cachedSizes[path] ?? [:]
+                    if let receiptSize = sizes[receiptName] {
+                        guard receiptSize < 1_000_000 else { throw AppError.message("An existing backup receipt is invalid. Choose a new backup folder.") }
+                        let reader = client.fileReader(path: path + "/" + receiptName)
+                        let bytes: Data
+                        do { bytes = try await reader.read(offset: 0, length: 1_000_000); try await reader.close() }
+                        catch { try? await reader.close(); throw error }
+                        guard let receipt = try? JSONDecoder().decode(PhotoBackupReceipt.self, from: bytes), receipt.matches(sizes, asset: identity) else {
+                            throw AppError.message("A previous backup is missing files or has changed. Choose a new folder to make another complete copy; existing files were left untouched.")
+                        }
+                        try check()
+                        try journal.record(identity)
+                        consecutiveDownloadFailures = 0
+                        progress = 0; completed += 1
+                        saveCheckpoint(share: share, folder: folder)
+                        continue
+                    }
+                    // Export every available resource: originals, Live Photo video and edit resources.
+                    var records: [PhotoBackupReceipt.Resource] = []
+                    for (resourceIndex, resource) in resources.enumerated() {
+                        try check()
+                        let original = try SharePolicy.name(resource.originalFilename)
+                        let name = try legacy ? SharePolicy.name("\(resourceIndex)-" + original) : PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: original, identity: identity, index: resourceIndex, timeZone: timeZone)
+                        let file = temporary.appendingPathComponent(UUID().uuidString)
+                        let base = Double(resourceIndex) / Double(resources.count)
+                        let span = 0.99 / Double(resources.count)
+                        let exportRun = runID
+                        status = "Preparing \(index + 1) of \(total) from Photos…"; progress = base
+                        watchdog?.cancel()
+                        try await PhotoDownloadRecovery.run(attempt: {
+                            try self.check()
+                            self.status = "Preparing \(index + 1) of \(self.total) from Photos…"
+                            try await PhotoResourceExport.write(resource, to: file) { [weak self] value in
+                                Task { @MainActor in
+                                    guard let self, self.runID == exportRun, self.backingUp, !self.paused else { return }
+                                    self.progress = max(self.progress, base + span * 0.1 * min(1, max(0, value)))
+                                }
+                            }
+                        }, retry: { attempt in
+                            self.status = "Photos download interrupted · retry \(attempt) of 3"
+                        })
+                        progress = base + span * 0.1
+                        try check(); touch()
+                        let size = UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+                        if let previous = sizes[name] {
+                            guard previous == size else { throw AppError.message("An unfinished backup has a conflicting file. Choose a new backup folder.") }
+                            // Crash recovery: compare bytes before accepting a file without a completion receipt.
+                            let reader = client.fileReader(path: path + "/" + name)
+                            let local = try FileHandle(forReadingFrom: file)
+                            do {
+                                var offset: UInt64 = 0
+                                while offset < size {
+                                    try check(); touch()
+                                    let remote = try await reader.read(offset: offset, length: 1_048_576)
+                                    let expected = try local.read(upToCount: remote.count) ?? Data()
+                                    guard !remote.isEmpty, remote == expected else { throw AppError.message("An unfinished backup differs from the original. Choose a new backup folder.") }
+                                    offset += UInt64(remote.count)
+                                    progress = base + span * (0.1 + 0.9 * Double(offset) / Double(max(1, size)))
+                                }
+                                try local.close(); try await reader.close()
+                            } catch { try? local.close(); try? await reader.close(); throw error }
+                        } else {
+                            status = "Backing up \(index + 1) of \(total)"
+                            try await upload(file, to: path + "/" + name, client: client, size: size, progressBase: base + span * 0.1, progressSpan: span * 0.9)
+                        }
+                        progress = base + span
+                        cachedSizes[path, default: [:]][name] = size
+                        records.append(.init(name: name, size: size))
+                        try FileManager.default.removeItem(at: file)
+                    }
+                    let receipt = PhotoBackupReceipt(version: 1, asset: identity, files: records)
+                    let file = temporary.appendingPathComponent("complete.json")
+                    let encoded = try JSONEncoder().encode(receipt); try encoded.write(to: file, options: .atomic)
+                    try await upload(file, to: path + "/" + receiptName, client: client, size: UInt64(encoded.count))
+                    for record in records { cachedSizes[path, default: [:]][record.name] = record.size }
+                    cachedSizes[path, default: [:]][receiptName] = UInt64(encoded.count)
                     try journal.record(identity)
                     progress = 0; completed += 1
                     saveCheckpoint(share: share, folder: folder)
-                    continue
-                }
-                // Export every available resource: originals, Live Photo video and edit resources.
-                var records: [PhotoBackupReceipt.Resource] = []
-                for (resourceIndex, resource) in resources.enumerated() {
+                    consecutiveDownloadFailures = 0
+                } catch is PhotoDownloadUnavailable {
                     try check()
-                    let original = try SharePolicy.name(resource.originalFilename)
-                    let name = try legacy ? SharePolicy.name("\(resourceIndex)-" + original) : PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: original, identity: identity, index: resourceIndex, timeZone: timeZone)
-                    let file = temporary.appendingPathComponent(UUID().uuidString)
-                    let base = Double(resourceIndex) / Double(resources.count)
-                    let span = 0.99 / Double(resources.count)
-                    let exportRun = runID
-                    status = "Preparing \(index + 1) of \(total) from Photos…"; progress = base
-                    watchdog?.cancel()
-                    try await PhotoResourceExport.write(resource, to: file) { [weak self] value in
-                        Task { @MainActor in
-                            guard let self, self.runID == exportRun, self.backingUp, !self.paused else { return }
-                            self.progress = max(self.progress, base + span * 0.1 * min(1, max(0, value)))
-                        }
+                    deferredDownloads += 1
+                    consecutiveDownloadFailures += 1
+                    progress = 0
+                    saveCheckpoint(share: share, folder: folder)
+                    // Never commit the asset receipt/index for an incomplete original.
+                    // The next normal resume automatically includes it again.
+                    for file in (try? FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil)) ?? [] {
+                        try? FileManager.default.removeItem(at: file)
                     }
-                    progress = base + span * 0.1
-                    try check(); touch()
-                    let size = UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-                    if let previous = sizes[name] {
-                        guard previous == size else { throw AppError.message("An unfinished backup has a conflicting file. Choose a new backup folder.") }
-                        // Crash recovery: compare bytes before accepting a file without a completion receipt.
-                        let reader = client.fileReader(path: path + "/" + name)
-                        let local = try FileHandle(forReadingFrom: file)
-                        do {
-                            var offset: UInt64 = 0
-                            while offset < size {
-                                try check(); touch()
-                                let remote = try await reader.read(offset: offset, length: 1_048_576)
-                                let expected = try local.read(upToCount: remote.count) ?? Data()
-                                guard !remote.isEmpty, remote == expected else { throw AppError.message("An unfinished backup differs from the original. Choose a new backup folder.") }
-                                offset += UInt64(remote.count)
-                                progress = base + span * (0.1 + 0.9 * Double(offset) / Double(max(1, size)))
-                            }
-                            try local.close(); try await reader.close()
-                        } catch { try? local.close(); try? await reader.close(); throw error }
-                    } else {
-                        status = "Backing up \(index + 1) of \(total)"
-                        try await upload(file, to: path + "/" + name, client: client, size: size, progressBase: base + span * 0.1, progressSpan: span * 0.9)
-                    }
-                    progress = base + span
-                    records.append(.init(name: name, size: size))
-                    try FileManager.default.removeItem(at: file)
+                    if consecutiveDownloadFailures >= 3 { throw PhotoDownloadUnavailable() }
+                    status = "Photo download unavailable · continuing with the next item"
                 }
-                let receipt = PhotoBackupReceipt(version: 1, asset: identity, files: records)
-                let file = temporary.appendingPathComponent("complete.json")
-                let encoded = try JSONEncoder().encode(receipt); try encoded.write(to: file, options: .atomic)
-                try await upload(file, to: path + "/" + receiptName, client: client, size: UInt64(encoded.count))
-                for record in records { cachedSizes[path, default: [:]][record.name] = record.size }
-                cachedSizes[path, default: [:]][receiptName] = UInt64(encoded.count)
-                try journal.record(identity)
-                progress = 0; completed += 1
-                saveCheckpoint(share: share, folder: folder)
             }
-            saveCheckpoint(share: share, folder: folder, finished: true)
-            progress = 1; status = "Backup complete · \(completed) items"
-            execution?.finish(success: true)
+            let complete = deferredDownloads == 0
+            saveCheckpoint(share: share, folder: folder, finished: complete)
+            progress = complete ? 1 : 0
+            status = complete ? "Backup complete · \(completed) items" : "Backed up \(completed) items · \(deferredDownloads) downloads pending. Tap Back up now to retry."
+            execution?.finish(success: complete)
         } catch {
             if paused || error is CancellationError { status = pauseReason }
             else { status = "Backup stopped"; self.error = error.localizedDescription }
@@ -535,6 +564,7 @@ struct PhotoBackupView: View {
                     if backup.backingUp { ProgressView(value: backup.progress); Text("\(backup.completed) of \(backup.total) items complete"); Button("Pause backup") { backup.pause() } }
                     else { Button("Back up now") { confirm = true }.buttonStyle(.borderedProminent).disabled(backup.busy || backup.share.isEmpty || backup.count == 0) }
                     Button("Verify existing backup") { confirmVerification = true }.disabled(backup.busy || backup.share.isEmpty || backup.count == 0)
+                    if backup.deferredDownloads > 0 { Text("\(backup.deferredDownloads) Photos downloads pending · these items are not backed up and will be retried on resume.").foregroundStyle(.orange) }
                     if let error = backup.error { Text(error).foregroundStyle(.orange) }
                 }
                 Section {
