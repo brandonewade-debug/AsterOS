@@ -42,3 +42,6 @@ Sources:
 https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api
 https://developer.apple.com/help/app-store-connect/manage-app-information/overview-of-export-compliance
 https://developer.apple.com/app-store/review/guidelines/
+
+## First uploaded build
+0.1.0 (2) uploaded September 27, 2026 at 08:46 America/Chicago. Xcode confirmed processing began. This is not confirmation of testing availability or Beta App Review approval. Complete encryption compliance, beta metadata, and group assignment in App Store Connect. The uploader reported missing TailscaleKit debug symbols; correct framework dSYM packaging for future builds.

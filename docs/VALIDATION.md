@@ -161,3 +161,9 @@ Read-only server inspection confirmed GPU Statistics and NVIDIA Driver are insta
 - Upload attempted using Xcode account; export stopped with Error Downloading App Information. User confirmed a new App Store Connect app record is needed. No build has been uploaded yet.
 - Encryption exemption is intentionally unset pending the actual Apple questionnaire; no unsupported NO declaration.
 - Added reproducible archive/upload helper, beta test notes, and documented remaining privacy/review gates.
+
+### TestFlight upload — 2026-09-27 08:46 America/Chicago
+- After the owner created the App Store Connect app record, the same 0.1.0 (2) archive uploaded successfully using the existing Xcode account.
+- Xcode confirmed Uploaded package is processing, Upload succeeded, and EXPORT SUCCEEDED.
+- Non-blocking warning: TailscaleKit framework dSYM missing from archive. App dSYM is present; framework symbol packaging still needs correction.
+- Apple processing completion, export-compliance answers, beta metadata, group assignment, and external Beta App Review are not yet verified. Browser access remains at Apple sign-in; no App Store Connect API credentials were configured.
