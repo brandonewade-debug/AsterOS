@@ -202,10 +202,15 @@ struct ContainerIcon: View {
     let container: Container
     let server: URL?
     @State private var loadedImage: UIImage?
+    @ObservedObject private var customIcons = CustomIconsStore.shared
+    private var customImage: UIImage? {
+        guard let server else { return nil }
+        return customIcons.image(app: "container:" + container.name.lowercased(), server: server)
+    }
     @ObservedObject private var tailnet = TailnetStore.shared
     var body: some View {
         Group {
-            if let loadedImage { Image(uiImage: loadedImage).resizable().scaledToFit().padding(2) }
+            if let image = customImage ?? loadedImage { Image(uiImage: image).resizable().scaledToFit().padding(2) }
             else {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18).fill(.mint.opacity(0.14))
@@ -217,9 +222,9 @@ struct ContainerIcon: View {
                 Circle().fill(container.state == "RUNNING" ? Color.green : Color.secondary)
                     .frame(width: 10, height: 10).overlay(Circle().stroke(DockTheme.background, lineWidth: 2)).offset(x: 2, y: 2)
             }
-            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)") {
+            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)-\(customImage != nil)") {
                 loadedImage = nil
-                guard let url = container.iconAddress(server: server) else { return }
+                guard customImage == nil, let url = container.iconAddress(server: server) else { return }
                 do {
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForResource = 15
@@ -237,6 +242,7 @@ struct ContainerDetailsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let container: Container
+    @State private var customIcon: CustomIconTarget?
     @State private var editing = false
     @State private var editor: ContainerEditorTarget?
     var body: some View {
@@ -253,6 +259,9 @@ struct ContainerDetailsView: View {
                     Text(container.status).font(.callout)
                 }
                 Section {
+                    Button("Change icon", systemImage: "photo") {
+                        if let server = store.selected?.address { customIcon = CustomIconTarget(app: "container:" + container.name.lowercased(), name: container.name, server: server) }
+                    }.disabled(store.demo)
                     Button("Edit container configuration", systemImage: "slider.horizontal.3") {
                         if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) }
                     }.disabled(store.demo || store.operating)
@@ -272,6 +281,7 @@ struct ContainerDetailsView: View {
             }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                 .toolbar { Button("Done") { dismiss() } }
                 .fullScreenCover(item: $editor, onDismiss: { Task { await store.refresh() } }) { ContainerEditorView(target: $0) }
+                .sheet(item: $customIcon) { CustomIconEditor(target: $0) }
                 .sheet(isPresented: $editing) { AddAppView(initialName: container.name, containerID: container.id) }
         }
     }

@@ -9,5 +9,18 @@
 	</dict>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to unlock AsterOS when you enable app security.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>AsterOS app order</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.asterlinelabs.asteros.app-order</string>
+		</dict>
+	</array>
 </dict>
 </plist>

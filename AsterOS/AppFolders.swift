@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AppFolder: Codable, Identifiable, Hashable {
     var id = UUID()
@@ -7,6 +8,28 @@ struct AppFolder: Codable, Identifiable, Hashable {
 }
 struct AppFolderLayout: Codable {
     var folders: [AppFolder] = []
+    var order: [String] = []
+    init(folders: [AppFolder] = [], order: [String] = []) { self.folders = folders; self.order = order }
+    private enum CodingKeys: String, CodingKey { case folders, order }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        folders = try values.decode([AppFolder].self, forKey: .folders)
+        order = try values.decodeIfPresent([String].self, forKey: .order) ?? []
+    }
+    func ordered(_ ids: [String], folder: UUID? = nil) -> [String] {
+        let saved = folder.flatMap { id in folders.first { $0.id == id }?.members } ?? order
+        var seen = Set<String>()
+        return (saved.filter { ids.contains($0) } + ids).filter { seen.insert($0).inserted }
+    }
+    mutating func reorder(_ app: String, over target: String, visible: [String], folder: UUID? = nil) {
+        var values = ordered(visible, folder: folder)
+        guard app != target, let from = values.firstIndex(of: app), let to = values.firstIndex(of: target) else { return }
+        values.remove(at: from); values.insert(app, at: to)
+        if let folder {
+            guard let index = folders.firstIndex(where: { $0.id == folder }), values.allSatisfy({ folders[index].members.contains($0) }) else { return }
+            folders[index].members = values + folders[index].members.filter { !values.contains($0) }
+        } else { order = values + order.filter { !values.contains($0) } }
+    }
     mutating func move(_ app: String, to folderID: UUID?) {
         guard folderID == nil || folders.contains(where: { $0.id == folderID }) else { return }
         for index in folders.indices {
@@ -80,6 +103,9 @@ struct AppFolderLayout: Codable {
         layout.folders[index].name = String(name.prefix(60)); persist()
     }
     func move(_ app: String, to folder: UUID?) { layout.move(app, to: folder); persist() }
+    func reorder(_ app: String, over target: String, visible: [String], folder: UUID? = nil) {
+        layout.reorder(app, over: target, visible: visible, folder: folder); persist()
+    }
     func remove(_ id: UUID) { layout.folders.removeAll { $0.id == id }; persist() }
     func folder(for app: String) -> UUID? { layout.folders.first { $0.members.contains(app) }?.id }
 }
@@ -98,6 +124,8 @@ struct CatalogPresentation: Identifiable {
 struct AppsView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var folders = AppFoldersStore()
+    @ObservedObject private var customIcons = CustomIconsStore.shared
+    @State private var customIcon: CustomIconTarget?
     @State private var adding = false
     @State private var catalogPresentation: CatalogPresentation?
     @State private var catalogServerID: UUID?
@@ -112,6 +140,7 @@ struct AppsView: View {
     @State private var folderName = ""
     @State private var editingFolder: UUID?
     @State private var movingApp: String?
+    @State private var draggedApp: String?
     private let columns = [GridItem(.adaptive(minimum: 82, maximum: 110), spacing: 22)]
     private func shortcut(for container: Container) -> SavedApp? {
         store.selected?.apps.first { $0.containerID == container.id || ($0.containerID == nil && $0.name.caseInsensitiveCompare(container.name) == .orderedSame) }
@@ -119,6 +148,30 @@ struct AppsView: View {
     private var items: [AppLaunchItem] {
         store.containers.map { AppLaunchItem(container: $0, shortcut: shortcut(for: $0)) } +
         (store.selected?.apps ?? []).filter { app in !store.containers.contains { shortcut(for: $0)?.id == app.id } }.map { AppLaunchItem(shortcut: $0) }
+    }
+    private var rootIDs: [String] {
+        folders.layout.ordered(["catalog"] + folders.layout.folders.map { "folder:" + $0.id.uuidString } + items.filter { folders.folder(for: $0.id) == nil }.map(\.id))
+    }
+    private func members(of folder: UUID) -> [AppLaunchItem] {
+        let values = items.filter { folders.folder(for: $0.id) == folder }
+        return folders.layout.ordered(values.map(\.id), folder: folder).compactMap { id in values.first { $0.id == id } }
+    }
+    @ViewBuilder private func reorderable<V: View>(_ view: V, id: String, folder: UUID? = nil) -> some View {
+        if store.demo || store.selected == nil { view }
+        else {
+            view.onDrag {
+                draggedApp = id
+                let provider = NSItemProvider()
+                provider.registerDataRepresentation(forTypeIdentifier: AppOrderDrop.type.identifier, visibility: .ownProcess) { completion in
+                    completion(Data(id.utf8), nil); return nil
+                }
+                return provider
+            }.onDrop(of: [AppOrderDrop.type], delegate: AppOrderDrop(target: id, dragged: $draggedApp) { source in
+                withAnimation(.snappy) {
+                    folders.reorder(source, over: id, visible: folder.map { members(of: $0).map(\.id) } ?? rootIDs, folder: folder)
+                }
+            })
+        }
     }
     private func prepareStore() {
         guard let server = store.selected, !store.demo else { return }
@@ -146,6 +199,7 @@ struct AppsView: View {
     }
     @ViewBuilder private func icon(_ item: AppLaunchItem) -> some View {
         if let container = item.container { ContainerIcon(container: container, server: store.selected?.address) }
+        else if let server = store.selected?.address, let image = customIcons.image(app: item.id, server: server) { Image(uiImage: image).resizable().scaledToFit().frame(width: 72, height: 72).clipShape(RoundedRectangle(cornerRadius: 18)) }
         else { Image(systemName: item.shortcut?.symbol ?? "app.fill").font(.largeTitle).foregroundStyle(.mint).frame(width: 72, height: 72).asterGlass(radius: 23) }
     }
     private func appTile(_ item: AppLaunchItem) -> some View {
@@ -158,6 +212,9 @@ struct AppsView: View {
         .accessibilityLabel(item.name)
         .contextMenu {
             Button("Open app", systemImage: "arrow.up.forward.app") { launch(item) }.disabled(store.demo)
+            Button("Change icon", systemImage: "photo") {
+                if let server = store.selected?.address { customIcon = CustomIconTarget(app: item.id, name: item.name, server: server) }
+            }.disabled(store.demo || store.selected == nil)
             Menu("Move to folder", systemImage: "folder") {
                 ForEach(folders.layout.folders) { folder in
                     Button(folder.name) { folders.move(item.id, to: folder.id) }
@@ -178,7 +235,7 @@ struct AppsView: View {
         }
     }
     private func folderTile(_ folder: AppFolder) -> some View {
-        let members = items.filter { folder.members.contains($0.id) }
+        let members = members(of: folder.id)
         return Button { openedFolder = folder } label: {
             VStack(spacing: 12) {
                 ZStack {
@@ -197,8 +254,19 @@ struct AppsView: View {
             Button("Remove folder", systemImage: "folder.badge.minus") { folders.remove(folder.id) }
         }
     }
-    private func appGrid(_ values: [AppLaunchItem]) -> some View {
-        LazyVGrid(columns: columns, spacing: 30) { ForEach(values) { appTile($0) } }
+    private func appGrid(_ values: [AppLaunchItem], folder: UUID) -> some View {
+        LazyVGrid(columns: columns, spacing: 30) { ForEach(values) { item in reorderable(appTile(item), id: item.id, folder: folder) } }
+    }
+    private var catalogTile: some View {
+        Button { openStore() } label: {
+            VStack(spacing: 12) {
+                Image(systemName: "bag.fill").font(.system(size: 34, weight: .medium)).foregroundStyle(.white)
+                    .frame(width: 72, height: 72)
+                    .background(LinearGradient(colors: [.mint, .teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .shadow(color: .mint.opacity(0.15), radius: 12, y: 5)
+                Text("App Store").font(.caption).foregroundStyle(.primary).frame(height: 34, alignment: .top)
+            }.frame(maxWidth: .infinity)
+        }.buttonStyle(.plain).disabled(store.selected == nil || store.demo).accessibilityLabel("App Store")
     }
     var body: some View {
         NavigationStack {
@@ -208,19 +276,13 @@ struct AppsView: View {
                     if let error = store.dockerError ?? folders.error { Text(error).font(.callout).foregroundStyle(.orange) }
                     if items.isEmpty && store.dockerError == nil { ContentUnavailableView("No apps loaded", systemImage: "square.grid.2x2", description: Text("Connect your Unraid server to see its Docker apps here.")) }
                     LazyVGrid(columns: columns, spacing: 30) {
-                        Button { openStore() } label: {
-                            VStack(spacing: 12) {
-                                Image(systemName: "bag.fill").font(.system(size: 34, weight: .medium)).foregroundStyle(.white)
-                                    .frame(width: 72, height: 72)
-                                    .background(LinearGradient(colors: [.mint, .teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                                    .shadow(color: .mint.opacity(0.15), radius: 12, y: 5)
-                                Text("App Store").font(.caption).foregroundStyle(.primary).frame(height: 34, alignment: .top)
-                            }.frame(maxWidth: .infinity)
-                        }.buttonStyle(.plain).disabled(store.selected == nil || store.demo).accessibilityLabel("App Store")
-                        ForEach(folders.layout.folders) { folderTile($0) }
-                        ForEach(items.filter { folders.folder(for: $0.id) == nil }) { appTile($0) }
+                        ForEach(rootIDs, id: \.self) { id in
+                            if id == "catalog" { reorderable(catalogTile, id: id) }
+                            else if let folder = folders.layout.folders.first(where: { "folder:" + $0.id.uuidString == id }) { reorderable(folderTile(folder), id: id) }
+                            else if let item = items.first(where: { $0.id == id }) { reorderable(appTile(item), id: id) }
+                        }
                     }
-                    if !items.isEmpty { Text("Touch and hold an app to organize it.").font(.caption).foregroundStyle(.secondary) }
+                    if !items.isEmpty { Text("Touch and hold, then drag to reorder. Use the menu for folders and icons.").font(.caption).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 24).padding(.vertical, 26).frame(maxWidth: 900).frame(maxWidth: .infinity)
             }.background { AsterBackdrop() }.navigationTitle("Apps")
             .toolbar {
@@ -234,13 +296,14 @@ struct AppsView: View {
                 let folder = folders.layout.folders.first { $0.id == original.id } ?? original
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
-                        let members = items.filter { folders.folder(for: $0.id) == folder.id }
+                        let members = members(of: folder.id)
                         if members.isEmpty { ContentUnavailableView("No apps yet", systemImage: "folder", description: Text("Touch and hold an app on the Apps screen, then choose Move to folder.")) }
-                        appGrid(members)
+                        appGrid(members, folder: folder.id)
                     }.padding(24).frame(maxWidth: 900).frame(maxWidth: .infinity)
                 }.background { AsterBackdrop() }.navigationTitle(folder.name)
                 .toolbar { Button("Rename", systemImage: "pencil") { prompt(folder: folder) } }
             }
+            .sheet(item: $customIcon) { CustomIconEditor(target: $0) }
             .sheet(isPresented: $adding) { AddAppView() }
             .sheet(item: $details) { ContainerDetailsView(container: $0) }
             .sheet(item: $removal) { target in
@@ -271,7 +334,7 @@ struct AppsView: View {
                 NativeAppStoreView(server: presentation.server, model: presentation.model)
             }
             .task(id: store.selectedID) {
-                openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID, address: store.selected?.address, knownServerIDs: store.profiles.map(\.id))
+                draggedApp = nil; customIcon = nil; openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID, address: store.selected?.address, knownServerIDs: store.profiles.map(\.id))
                 if catalogServerID != store.selectedID || store.demo {
                     catalogPresentation = nil; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil; catalogServerID = nil
                 }
@@ -280,4 +343,15 @@ struct AppsView: View {
             .onDisappear { if catalogPresentation == nil { catalogModel?.stopCatalogObservation(); catalogModel?.stop() } }
         }
     }
+}
+
+private struct AppOrderDrop: DropDelegate {
+    static let type = UTType(exportedAs: "com.asterlinelabs.asteros.app-order")
+    let target: String
+    @Binding var dragged: String?
+    let move: (String) -> Void
+    func validateDrop(info: DropInfo) -> Bool { dragged != nil && info.hasItemsConforming(to: [Self.type]) }
+    func dropEntered(info: DropInfo) { if let dragged, dragged != target { move(dragged) } }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { dragged = nil; return true }
 }
