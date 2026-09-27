@@ -149,6 +149,8 @@ struct CatalogDialog {
     @Published private(set) var catalogRefreshing = true
     let session: ServerWebSession
     @Published var catalogItems: [CatalogApp] = []
+    @Published var catalogCategories: [CatalogCategory] = []
+    @Published var catalogCategory: CatalogCategory?
     @Published var catalogReady = false
     @Published var catalogBusy = false
     @Published var catalogNext = false
@@ -190,6 +192,7 @@ struct CatalogDialog {
     }
     func openCatalog() {
         guard !applyingConfiguration else { return }
+        catalogCategory = nil
         nativeEditor = nil; configurationResult = nil
         error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = editingContainer == nil; editorOpened = false; editorAdvanced = nil
         catalogDeadline?.cancel()
@@ -318,6 +321,7 @@ struct CatalogDialog {
                   let bytes = json.data(using: .utf8), bytes.count < 4_000_000 else { return }
             let page = try JSONDecoder().decode(NativeCatalogPage.self, from: bytes)
             guard !Task.isCancelled, onCatalog else { return }
+            catalogCategories = page.categories
             catalogBusy = page.busy
             if page.ready {
                 // Show cards as they arrive; installation stays gated until CA finishes.
@@ -337,17 +341,35 @@ struct CatalogDialog {
         } catch { /* Server view remains available if the plugin markup has changed. */ }
     }
     func searchCatalog(_ query: String) async {
-        guard onCatalog, catalogLive else { return }
+        guard onCatalog, catalogLive, !catalogBusy else { return }
         let query = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         guard !query.isEmpty else { openCatalog(); return }
+        catalogCategory = nil
         cacheable = false; catalogBusy = true; error = nil
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.search, arguments: ["query": query], in: nil, contentWorld: .page) as? Bool
             if ok != true { error = "Search is unavailable for this catalog version. Use the server view."; catalogBusy = false }
         } catch { self.error = "Could not search the server catalog."; catalogBusy = false }
     }
+    func selectCatalogCategory(_ category: CatalogCategory) async {
+        guard onCatalog, catalogLive, !catalogBusy else { return }
+        cacheable = false; catalogBusy = true; error = nil
+        do {
+            let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.category, arguments: ["categoryID": category.id], in: nil, contentWorld: .page) as? Bool
+            if ok == true {
+                catalogCategory = category
+                catalogItems = []; catalogNext = false; catalogPrevious = false
+            } else {
+                error = "This category is unavailable for this catalog version. Try the server view."
+                catalogBusy = false
+            }
+        } catch {
+            self.error = "Could not load this category. Try again."
+            catalogBusy = false
+        }
+    }
     func catalogPage(forward: Bool) async {
-        guard onCatalog, catalogLive else { return }
+        guard onCatalog, catalogLive, !catalogBusy else { return }
         cacheable = false
         do { _ = try await webView.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": forward], in: nil, contentWorld: .page) }
         catch { self.error = "Could not load the next catalog page." }

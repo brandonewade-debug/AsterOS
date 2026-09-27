@@ -639,6 +639,58 @@ final class AsterOSTests: XCTestCase {
         XCTAssertNil(model.editorAdvanced)
     }
 
+    @MainActor func testCatalogCategoriesUseServerMenuAndKeepPagingInCategory() async throws {
+        let loaded = expectation(description: "Category fixture loaded")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero); web.navigationDelegate = delegate
+        web.loadHTMLString(#"""
+        <input id="searchBox" value="old search">
+        <ul class="menuItems">
+          <li class="categoryMenu" data-category="Media">Media</li>
+          <li class="subCategory">
+            <li class="categoryMenu caCategoryAll" data-category="Media">All</li>
+            <li class="categoryMenu" data-category="Media:Photos">Photos</li>
+          </li>
+          <li class="categoryMenu" data-category="Backup">Backup</li>
+        </ul>
+        <div id="cards"><div class="ca_holder" data-apppath="featured" data-appname="Featured"><span class="appDocker"></span></div></div>
+        <a class="pageRight" onclick="window.pagedCategory=window.requestedCategory">Next</a>
+        <script>
+        var data={searchFlag:true, searchInProgress:false}, jQuery={active:0};
+        function clearSearchBox(){document.querySelector('#searchBox').value='';}
+        function changeCategory(menu){window.requestedCategory=menu.getAttribute('data-category');}
+        document.querySelectorAll('.categoryMenu').forEach(menu=>menu.addEventListener('click',()=>{
+            if(menu.nextElementSibling?.classList.contains('subCategory')) return;
+            changeCategory(menu);
+            document.querySelector('#cards').innerHTML='<div class="ca_holder" data-apppath="full-catalog" data-appname="Not Featured"><span class="appDocker"></span></div>';
+        }));
+        </script>
+        """#, baseURL: URL(string: "https://catalog.invalid/Apps"))
+        await fulfillment(of: [loaded], timeout: 10)
+        func snapshot() async throws -> NativeCatalogPage {
+            let json = try await web.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as! String
+            return try JSONDecoder().decode(NativeCatalogPage.self, from: Data(json.utf8))
+        }
+        let initial = try await snapshot()
+        XCTAssertTrue(initial.categories.contains { $0.id == "Backup" }, "Menu categories must not depend on featured cards")
+        XCTAssertEqual(initial.categories.filter { $0.id == "Media" }.count, 1)
+        let selected = try await web.callAsyncJavaScript(NativeCatalogBridge.category, arguments: ["categoryID": "Media"], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(selected, true)
+        let result = try await snapshot()
+        XCTAssertEqual(result.items.first?.name, "Not Featured")
+        let search = try await web.evaluateJavaScript("document.querySelector('#searchBox').value") as? String
+        XCTAssertEqual(search, "")
+        _ = try await web.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": true], in: nil, contentWorld: .page)
+        let paged = try await web.evaluateJavaScript("window.pagedCategory") as? String
+        XCTAssertEqual(paged, "Media")
+        let missing = try await web.callAsyncJavaScript(NativeCatalogBridge.category, arguments: ["categoryID": "missing"], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(missing, false)
+        _ = try await web.evaluateJavaScript("jQuery.active=1")
+        let loading = try await snapshot()
+        XCTAssertTrue(loading.busy, "Category requests also need a loading state")
+        web.navigationDelegate = nil
+    }
+
     @MainActor func testNativeCatalogReadsDockerCardsWithoutLoginDataOrInstalling() async throws {
         let loaded = expectation(description: "Catalog fixture loaded")
         let delegate = CatalogFixtureLoader(loaded)
