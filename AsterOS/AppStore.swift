@@ -13,20 +13,25 @@ import SwiftUI
     @Published var lastUpdated: Date?
     @Published var loading = false
     @Published var operating = false
+    @Published private(set) var preferencesRevision = 0
     private var generation = UUID()
     var selected: ServerProfile? { profiles.first { $0.id == selectedID } }
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "serverProfiles") {
+    private let defaults: UserDefaults
+    private let makeClient: (ServerProfile) throws -> any ServerAPI
+    init(defaults: UserDefaults = .standard, client: ((ServerProfile) throws -> any ServerAPI)? = nil) {
+        self.defaults = defaults
+        self.makeClient = client ?? { profile in UnraidClient(profile: profile, key: try CredentialStore.read(profile.id)) }
+        if let data = defaults.data(forKey: "serverProfiles") {
             do { profiles = try JSONDecoder().decode([ServerProfile].self, from: data) }
-            catch { self.error = "Saved connections could not be loaded." }
+            catch { if defaults.data(forKey: "serverProfiles-recovery") == nil { defaults.set(data, forKey: "serverProfiles-recovery") }; self.error = "Saved connections could not be loaded. A recovery copy has been kept." }
         }
-        if let raw = UserDefaults.standard.string(forKey: "selectedServer"), let id = UUID(uuidString: raw), profiles.contains(where: { $0.id == id }) { selectedID = id }
+        if let raw = defaults.string(forKey: "selectedServer"), let id = UUID(uuidString: raw), profiles.contains(where: { $0.id == id }) { selectedID = id }
         else { selectedID = profiles.first?.id }
     }
     private func persist() {
-        do { UserDefaults.standard.set(try JSONEncoder().encode(profiles), forKey: "serverProfiles") }
+        do { defaults.set(try JSONEncoder().encode(profiles), forKey: "serverProfiles") }
         catch { self.error = "Unable to save connections." }
-        UserDefaults.standard.set(selectedID?.uuidString, forKey: "selectedServer")
+        defaults.set(selectedID?.uuidString, forKey: "selectedServer")
     }
     func select(_ id: UUID?) {
         generation = UUID(); demo = false; selectedID = id
@@ -48,6 +53,16 @@ import SwiftUI
         try CredentialStore.save(secret, for: profile.id)
         profiles.append(profile); select(profile.id); overview = result; lastUpdated = Date()
     }
+    func renewAuthorization(serverID: UUID, key: String) async throws {
+        guard let profile = profiles.first(where: { $0.id == serverID }) else { throw AppError.message("This server is no longer saved.") }
+        let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !secret.isEmpty else { throw AppError.message("A server credential is required.") }
+        let result = try await UnraidClient(profile: profile, key: secret).overview()
+        guard profiles.contains(where: { $0.id == serverID && $0.address == profile.address }) else { throw AppError.message("The saved connection changed. Please try again.") }
+        try CredentialStore.save(secret, for: serverID)
+        // Keep the profile ID, app organization, share account, and backup destination.
+        if selectedID == serverID { select(serverID); overview = result; lastUpdated = Date() }
+    }
     func removeSelected() throws {
         guard let id = selectedID else { select(profiles.first?.id); return }
         try DirectFilesStore.forget(serverID: id, address: selected?.address)
@@ -62,17 +77,22 @@ import SwiftUI
         if let containerID { profiles[i].apps.removeAll { $0.containerID == containerID || ($0.containerID == nil && $0.name.caseInsensitiveCompare(name) == .orderedSame) } }
         profiles[i].apps.append(SavedApp(name: name.isEmpty ? (url.host ?? "App") : name, url: url, containerID: containerID)); persist()
     }
+    func importPreferences(_ archive: PreferencesArchive, serverID: UUID) throws {
+        guard let index = profiles.firstIndex(where: { $0.id == serverID }), selectedID == serverID else { throw AppError.message("The selected server changed.") }
+        try archive.apply(to: profiles[index])
+        profiles[index].apps = archive.apps; persist(); preferencesRevision += 1
+    }
     func removeApp(_ id: UUID) {
         guard let i = profiles.firstIndex(where: { $0.id == selectedID }) else { return }
         profiles[i].apps.removeAll { $0.id == id }; persist()
     }
     func refresh() async {
-        guard !demo, let profile = selected, !loading else { return }
+        guard !demo, let profile = selected, !loading, !operating else { return }
         let token = generation
         loading = true
         defer { if token == generation { loading = false } }
         do {
-            let client = UnraidClient(profile: profile, key: try CredentialStore.read(profile.id))
+            let client = try makeClient(profile)
             let result = try await client.overview()
             guard token == generation else { return }
             overview = result; error = nil; lastUpdated = Date()
@@ -80,23 +100,30 @@ import SwiftUI
                 let result = try await client.containers()
                 guard token == generation else { return }
                 containers = result; dockerError = nil
-            } catch { if token == generation { containers = []; dockerError = error.localizedDescription } }
+            } catch { if token == generation { dockerError = "Could not refresh apps. The last loaded list is shown and may be out of date. " + error.localizedDescription } }
             do {
                 let result = try await client.metrics()
                 guard token == generation else { return }
                 metrics = result; metricsError = nil
             } catch { if token == generation { metrics = nil; metricsError = "Live metrics unavailable with this server version or API permissions." } }
-        } catch { if token == generation { self.error = error.localizedDescription } }
+        } catch {
+            if token == generation {
+                self.error = error.localizedDescription
+                dockerError = "Server connection unavailable. The last app list may be out of date. Refresh before changing containers."
+                metrics = nil; metricsError = "Waiting for a new reading."
+            }
+        }
     }
     func removeContainer(_ container: Container, from serverID: UUID) async throws {
         guard let profile = selected, profile.id == serverID, !demo else { throw AppError.message("The selected server changed. Open this app's details again before removing it.") }
         guard !operating else { throw AppError.message("Wait for the current container operation to finish.") }
         let token = generation; operating = true
         defer { operating = false }
-        let client = UnraidClient(profile: profile, key: try CredentialStore.read(profile.id))
+        let client = try makeClient(profile)
         // Never retry a removal automatically if the connection drops after it was sent.
         try await client.removeContainer(id: container.id)
         guard token == generation else { return }
+        loading = false
         generation = UUID() // Invalidate a list refresh that started before removal.
         let refreshToken = generation
         containers.removeAll { $0.id == container.id }
@@ -113,16 +140,22 @@ import SwiftUI
         }
     }
     func perform(_ action: ContainerAction, container: Container) async {
-        guard let profile = selected, !demo, !operating else { return }
+        guard let profile = selected, !demo, !operating, dockerError == nil else { return }
         let token = generation; operating = true
         defer { operating = false }
         do {
-            let client = UnraidClient(profile: profile, key: try CredentialStore.read(profile.id))
+            let client = try makeClient(profile)
             try await client.perform(action, id: container.id)
             guard token == generation else { return }
-            let updated = try await client.containers()
-            guard token == generation else { return }
-            containers = updated; dockerError = nil
-        } catch { if token == generation { dockerError = error.localizedDescription } }
+            generation = UUID(); loading = false
+            let refreshToken = generation
+            do {
+                let updated = try await client.containers()
+                guard refreshToken == generation else { return }
+                containers = updated; dockerError = nil
+            } catch {
+                if refreshToken == generation { dockerError = "Unraid confirmed the action, but the app list could not refresh. Refresh to check the current state." }
+            }
+        } catch { if token == generation { dockerError = "The action could not be confirmed. Refresh and check the container before trying again. " + error.localizedDescription } }
     }
 }

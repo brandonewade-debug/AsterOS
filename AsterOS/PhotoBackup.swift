@@ -377,9 +377,19 @@ enum PhotoBackupPolicy {
             try await writer.close(); try check(); touch()
             let reader = client.fileReader(path: staging)
             let written: UInt64
-            do { written = try await reader.fileSize; try await reader.close() }
-            catch { try? await reader.close(); throw error }
-            guard written == size else { throw AppError.message("The server did not receive the complete file. Retry backup.") }
+            do {
+                written = try await reader.fileSize
+                guard written == size else { throw AppError.message("The server did not receive the complete file. Retry backup.") }
+                // Read back the staging file before committing it or writing a completion receipt.
+                try handle.seek(toOffset: 0)
+                try await BackupVerification.verify(size: size, readLocal: { count in
+                    try handle.read(upToCount: count) ?? Data()
+                }, readRemote: { offset, count in
+                    try self.check(); self.touch()
+                    return try await reader.read(offset: offset, length: UInt32(count))
+                })
+                try await reader.close()
+            } catch { try? await reader.close(); throw error }
             try await client.move(from: staging, to: destination)
             try check(); touch()
         } catch {
@@ -393,7 +403,7 @@ enum PhotoBackupPolicy {
 struct PhotosView: View {
     @EnvironmentObject var app: AppStore
     var body: some View {
-        if let server = app.selected, !app.demo { PhotoBackupView(server: server, knownServerIDs: app.profiles.map(\.id)).id("photos-" + server.id.uuidString) }
+        if let server = app.selected, !app.demo { PhotoBackupView(server: server, knownServerIDs: app.profiles.map(\.id)).id("photos-" + server.id.uuidString + "-\(app.preferencesRevision)") }
         else { NavigationStack { ContentUnavailableView("Connect your server", systemImage: "photo", description: Text("Connect Unraid to set up photo backup to one of its shares.")).navigationTitle("Photos") } }
     }
 }
@@ -410,7 +420,7 @@ struct PhotoBackupView: View {
             GlassForm {
                 Section {
                     Label("Your photos. Your server.", systemImage: "photo.on.rectangle.angled").font(.title2.bold())
-                    Text("Copy photos, videos and Live Photo resources to \(server.name). Originals stay on your iPhone.").foregroundStyle(.secondary)
+                    Text("Copy photos, videos and Live Photo resources to \(server.name). Uploads are verified before completion. Originals stay on your iPhone.").foregroundStyle(.secondary)
                 }
                 Section("Backup destination") {
                     if !backup.hasShareAccount { Text("Connect your share account in the Files tab first, then return here.") }

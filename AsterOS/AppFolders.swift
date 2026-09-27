@@ -224,10 +224,10 @@ struct AppsView: View {
             }.disabled(store.demo || store.selected == nil)
             if let container = item.container {
                 Button("App details", systemImage: "info.circle") { details = container }
-                Button("Edit container", systemImage: "slider.horizontal.3") { if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) } }.disabled(store.demo || store.operating)
-                Button("Remove container", systemImage: "trash", role: .destructive) { if let serverID = store.selectedID { removal = ContainerRemovalTarget(container: container, serverID: serverID) } }.disabled(store.demo || store.operating)
+                Button("Edit container", systemImage: "slider.horizontal.3") { if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) } }.disabled(store.demo || store.operating || store.dockerError != nil)
+                Button("Remove container", systemImage: "trash", role: .destructive) { if let serverID = store.selectedID { removal = ContainerRemovalTarget(container: container, serverID: serverID) } }.disabled(store.demo || store.operating || store.dockerError != nil)
                 if container.state == "RUNNING" || container.state == "EXITED" {
-                    Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating)
+                    Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating || store.dockerError != nil)
                 }
             } else if let shortcut = item.shortcut {
                 Button("Remove shortcut", role: .destructive) { folders.move(item.id, to: nil); store.removeApp(shortcut.id) }
@@ -264,9 +264,9 @@ struct AppsView: View {
                     .frame(width: 72, height: 72)
                     .background(LinearGradient(colors: [.mint, .teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .shadow(color: .mint.opacity(0.15), radius: 12, y: 5)
-                Text("App Store").font(.caption).foregroundStyle(.primary).frame(height: 34, alignment: .top)
+                Text("Discover").font(.caption).foregroundStyle(.primary).frame(height: 34, alignment: .top)
             }.frame(maxWidth: .infinity)
-        }.buttonStyle(.plain).disabled(store.selected == nil || store.demo).accessibilityLabel("App Store")
+        }.buttonStyle(.plain).disabled(store.selected == nil || store.demo).accessibilityLabel("Discover Unraid apps")
     }
     var body: some View {
         NavigationStack {
@@ -333,7 +333,7 @@ struct AppsView: View {
             .fullScreenCover(item: $catalogPresentation, onDismiss: { Task { await store.refresh() } }) { presentation in
                 NativeAppStoreView(server: presentation.server, model: presentation.model)
             }
-            .task(id: store.selectedID) {
+            .task(id: "\(store.selectedID?.uuidString ?? "none")-\(store.preferencesRevision)") {
                 draggedApp = nil; customIcon = nil; openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID, address: store.selected?.address, knownServerIDs: store.profiles.map(\.id))
                 if catalogServerID != store.selectedID || store.demo {
                     catalogPresentation = nil; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil; catalogServerID = nil
