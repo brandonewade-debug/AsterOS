@@ -12,7 +12,7 @@ enum TerminalPolicy {
     static func commanderCommand(nonce: String) -> String? {
         guard UUID(uuidString: nonce) != nil else { return nil }
         // Foreground process, scoped to this terminal. Never kill other agents or install a boot service.
-        let script = #"trap 'printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; printf "\nASTEROS_DC_BEGIN_\#(nonce)\n"; if ! command -v npx >/dev/null 2>&1; then printf "Node.js / npx is required on this server.\n"; exit 127; fi; npx -y @wonderwhy-er/desktop-commander@0.2.51 remote"#
+        let script = #"trap 'printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; printf "\nASTEROS_DC_BEGIN_\#(nonce)\n"; if ! command -v node >/dev/null 2>&1; then printf "Node.js is required on this server.\n"; exit 127; fi; aster_dc_dir=/mnt/user/appdata/asteros/desktop-commander; aster_dc_entry="$aster_dc_dir/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"; if [ -f "$aster_dc_dir/.installed-0.2.51" ] && [ -f "$aster_dc_entry" ]; then printf "Reconnecting with installed Desktop Commander.\n"; node "$aster_dc_entry" remote; elif command -v desktop-commander >/dev/null 2>&1; then printf "Reconnecting with existing Desktop Commander.\n"; desktop-commander remote; else if [ ! -d /mnt/user/appdata ]; then printf "The appdata share must be available before installing Desktop Commander.\n"; exit 1; fi; if ! command -v npm >/dev/null 2>&1; then printf "npm is required for the one-time installation.\n"; exit 127; fi; mkdir -p "$aster_dc_dir" || exit 1; if ! mkdir "$aster_dc_dir/.installing" 2>/dev/null; then printf "Another installation is running, or a previous installation was interrupted. Check the installation before retrying.\n"; exit 1; fi; trap 'rmdir "$aster_dc_dir/.installing" 2>/dev/null; printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; printf "Installing Desktop Commander once in appdata…\n"; npm install --prefix "$aster_dc_dir" --no-audit --no-fund --save-exact @wonderwhy-er/desktop-commander@0.2.51 && [ -f "$aster_dc_entry" ] || exit 1; touch "$aster_dc_dir/.installed-0.2.51" || exit 1; rmdir "$aster_dc_dir/.installing" || exit 1; printf "Installation saved. Connecting Desktop Commander.\n"; node "$aster_dc_entry" remote; fi"#
         return "bash -c '" + script.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 }
@@ -222,7 +222,7 @@ struct ServerTerminalView: View {
                     if model.agentMayBeRunning { Button("Stop") { Task { await model.interrupt() } }.disabled(!model.ready) }
                     else { Button("Start") { confirmStart = true }.disabled(!model.ready) }
                 }.padding(.horizontal)
-                Text("Pair with your Desktop Commander account using the code/link in the terminal. Stop interrupts the agent started in this session; it does not stop agents launched elsewhere.").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                Text("Start reuses the installed copy. On first use, it installs once in your appdata share. Pair only if Desktop Commander asks. Stop interrupts the agent started in this session; it does not stop agents launched elsewhere.").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
             }
             if model.loading { ProgressView("Opening terminal…") }
             if let error = model.error {
@@ -247,7 +247,7 @@ struct ServerTerminalView: View {
         .toolbar { if model.agentMayBeRunning { ToolbarItem(placement: .cancellationAction) { Button("Close") { confirmClose = true } } } }
         .confirmationDialog("Start Desktop Commander on this server?", isPresented: $confirmStart, titleVisibility: .visible) {
             Button("Start Desktop Commander") { Task { await model.startCommander() } }
-        } message: { Text("This downloads and runs Desktop Commander 0.2.51 using npx. Your paired AI clients can access this server with the terminal user's permissions. Node.js must already be installed.") }
+        } message: { Text("Reconnect using the installed Desktop Commander. If no copy is available, AsterOS installs version 0.2.51 once in appdata. Your paired AI clients get the terminal user’s permissions. Node.js is required; npm is needed only for installation.") }
         .confirmationDialog("Close this terminal?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Stop first") { Task { await model.interrupt() } }
             Button("Close without confirming stop", role: .destructive) { dismiss() }
