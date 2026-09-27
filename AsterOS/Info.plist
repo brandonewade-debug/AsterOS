@@ -22,5 +22,13 @@
 			<string>com.asterlinelabs.asteros.app-order</string>
 		</dict>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).photo-backup.*</string>
+	</array>
 </dict>
 </plist>

@@ -26,7 +26,7 @@ An external TestFlight release requires completed beta contact/review metadata, 
 - Test PIN/Face ID, large text, VoiceOver, and iPad rotation.
 
 ## Known beta limitations
-Photo backup is explicit-start and foreground-only. Server alerts are in-app, not background push.
+Photo backup is explicit-start. Build 4 continues across tabs and requests iOS 26 continued background processing; older systems or denied requests get limited background time. iOS may expire the task and force-quit stops it. Server alerts are in-app, not background push.
 GPU telemetry is hardware/plugin-dependent; missing data should be shown as unavailable.
 Build 3 adds offline demo navigation for dashboard, sample files, simulated backup, and sample container configuration. It does not perform real transfers, authentication, terminal sessions, or container operations. Apple may still request a dedicated review server.
 Preferences export excludes credentials, Tailscale identity, custom icon images, and server-side backup receipts.
@@ -69,3 +69,16 @@ Published website (HTTP 200 verified):
 - Support: https://brandonewade-debug.github.io/asterline-labs/support/
 
 App Store Connect saved: beta description/contact/reviewer demo notes; distribution description/promotional text/keywords/copyright/contact; subtitle; Utilities category; calculated age rating 16+ (17+ on older OS) reflecting unrestricted website access. Public release is manual. Website URL fields still need entry, including the privacy policy in both TestFlight and App Privacy. Build-specific What to Test, group assignment and external submission remain pending. Do not claim the expanded demo exercises real server connections or actual transfers. The SDK dSYM warning is still outstanding.
+
+## September 27 review and build 4 follow-up
+Build 3 was subsequently marked compliant (standard non-OS encryption; France excluded per the selected distribution scope), assigned to Family, and submitted to the empty External Beta group. Apple displayed Waiting for Review. Automatic tester notification was disabled; no new invitations or public App Store release were sent. TestFlight marketing/privacy and distribution marketing/support/privacy URLs were saved. App Privacy data disclosures remain unfinished.
+
+Build 4 fixes photo backup ownership and resume:
+- Switching tabs leaves the same app-owned backup task running.
+- Explicitly starting backup requests iOS 26 continued processing with system progress/Stop UI; older iOS/denied requests use a finite UIKit background lease. Expiration cancels work safely; users resume with Back up now.
+- A destination-scoped local completion journal skips per-item network receipt reads on ordinary restart. It is updated only after successful server receipt verification/commit.
+- Existing receipts are imported once on first use of this build. A changed server/account/share/root or missing/replaced root marker triggers a different index. Edited assets use a new identity.
+- Verify existing backup explicitly rebuilds the index from server receipts and file sizes. It is not a checksum audit of previously backed-up media.
+- PhotoKit resource exports can be cancelled, including in-flight iCloud retrieval.
+
+Hardware acceptance for build 4: begin with a disposable five-item selection; leave Photos for another tab, switch apps/lock the phone, return, and confirm progress. Test system Stop, manual Pause, force-quit during a transfer, and resume. After one receipt-migration pass, compare a second resume. Verify originals/Live Photo paired resources/videos on the server. Network setup and local Photos enumeration still take time; the 27,000-record journal test is not an end-to-end phone performance promise.

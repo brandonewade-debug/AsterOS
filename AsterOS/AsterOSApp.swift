@@ -5,7 +5,7 @@ import SwiftUI
     @StateObject private var lock = AppLockStore()
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vpn = TailnetStore.shared
-    var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).environmentObject(lock).tint(.mint).opacity(lock.locked || lock.shield ? 0 : 1).accessibilityHidden(lock.locked || lock.shield).background(AppSecurityWindow(lock: lock)).onChange(of: scenePhase, initial: true) { _, phase in lock.sceneChanged(phase) } } }
+    var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).environmentObject(lock).tint(.mint).opacity(lock.locked || lock.shield ? 0 : 1).accessibilityHidden(lock.locked || lock.shield).background(AppSecurityWindow(lock: lock)).onChange(of: scenePhase, initial: true) { _, phase in lock.sceneChanged(phase); store.photoBackupSceneChanged(phase) } } }
 }
 enum DockTheme {
     static let background = Color(red: 0.055, green: 0.065, blue: 0.08)
