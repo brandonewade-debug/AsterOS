@@ -59,3 +59,13 @@ On first launch, scroll down in Connect your server and tap Explore demo. No acc
 The demo is clearly labeled for everyone; it is not a hidden reviewer-only mode. Live server functions still require the user's server authorization and share account.
 Connection stages include Tailscale state/elapsed time and server/app/metrics request elapsed time plus the 30-second resource-timeout budget, not a guaranteed connection ETA.
 Cancellation during normal task transitions no longer surfaces as a server failure.
+
+## September 27 build 3 handoff
+0.1.0 (3) signed archive and upload succeeded; App Store Connect shows Complete/Missing Compliance. Build 3 is not yet assigned to a testing group or submitted for external review. The standard-encryption option was selected because Tailscale embeds encryption outside Apple OS APIs; the remaining questionnaire is not confirmed saved. Automatic browser review blocked further inspection of the open form. Do not mark this build compliant or approved without verifying Apple state.
+
+Published website (HTTP 200 verified):
+- Marketing: https://brandonewade-debug.github.io/asterline-labs/apps/asteros/
+- Privacy: https://brandonewade-debug.github.io/asterline-labs/privacy/asteros/
+- Support: https://brandonewade-debug.github.io/asterline-labs/support/
+
+App Store Connect saved: beta description/contact/reviewer demo notes; distribution description/promotional text/keywords/copyright/contact; subtitle; Utilities category; calculated age rating 16+ (17+ on older OS) reflecting unrestricted website access. Public release is manual. Website URL fields still need entry, including the privacy policy in both TestFlight and App Privacy. Build-specific What to Test, group assignment and external submission remain pending. Do not claim the expanded demo exercises real server connections or actual transfers. The SDK dSYM warning is still outstanding.
