@@ -414,6 +414,25 @@ final class AsterOSTests: XCTestCase {
         XCTAssertTrue(command.contains("node \"$aster_dc_entry\" remote"))
         XCTAssertFalse(command.contains("pkill")); XCTAssertFalse(command.contains("nohup"))
     }
+    @MainActor func testTerminalAppearanceFitsPhoneWithoutSendingCommands() async throws {
+        let loaded = expectation(description: "Terminal appearance fixture")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 600)); web.navigationDelegate = delegate
+        web.loadHTMLString(#"<html><head><meta name="viewport" content="width=980"></head><body><div id="terminal"></div><script>window.sent=[];window.fits=0;window.term={options:{fontSize:10,theme:{red:'#ff0000'}},fit:()=>window.fits++,input:(value)=>window.sent.push(value)};</script></body></html>"#, baseURL: URL(string: "https://server.invalid/webterminal/ttyd/"))
+        await fulfillment(of: [loaded], timeout: 10)
+        for size in [15, 18, 18] {
+            let applied = try await web.callAsyncJavaScript(TerminalBridge.appearance, arguments: ["fontSize": size], in: nil, contentWorld: .page) as? Bool
+            XCTAssertEqual(applied, true)
+        }
+        let values = try await web.evaluateJavaScript("({font:term.options.fontSize,background:term.options.theme.background,red:term.options.theme.red,viewport:document.querySelector('meta[name=viewport]').content,styles:document.querySelectorAll('#aster-terminal-style').length,inputs:sent.length})") as! [String: Any]
+        XCTAssertEqual(values["font"] as? Int, 18)
+        XCTAssertEqual(values["background"] as? String, "#101217")
+        XCTAssertEqual(values["red"] as? String, "#ff0000", "Preserve terminal ANSI colors")
+        XCTAssertTrue((values["viewport"] as? String)?.contains("width=device-width") == true)
+        XCTAssertEqual(values["styles"] as? Int, 1)
+        XCTAssertEqual(values["inputs"] as? Int, 0)
+        web.navigationDelegate = nil
+    }
     @MainActor func testTerminalBridgeRequiresLiveShellAndTracksOnlyItsAgent() async throws {
         let loaded = expectation(description: "Terminal fixture")
         let delegate = CatalogFixtureLoader(loaded)

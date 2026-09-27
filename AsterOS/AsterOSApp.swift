@@ -325,7 +325,7 @@ struct SettingsView: View {
                 if let server = store.selected, !store.demo {
                     Section("Server tools") {
                         NavigationLink { ServerTerminalView(server: server) } label: { Label("Terminal", systemImage: "terminal") }
-                        NavigationLink { ServerTerminalView(server: server, commander: true) } label: { Label("Desktop Commander", systemImage: "desktopcomputer") }
+                        Text("Desktop Commander controls are available in the terminal’s options menu.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Section("Preview build") {
