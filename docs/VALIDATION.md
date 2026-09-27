@@ -172,3 +172,12 @@ Read-only server inspection confirmed GPU Statistics and NVIDIA Driver are insta
 ## Review demo and connection progress — September 27, 2026
 70 simulator tests passed, including new cancellation, saved-server preservation, demo isolation, fixture consistency and phone-screen rendering coverage. Inspected rendered Photos, Apps and install-editor screens. Demo data is local/in-memory; no client is created for demo refresh or container actions. Existing mutation failure and backup verification tests remain passing.
 App Store Connect beta description/contact and store description, promotional text, keywords, subtitle and Utilities category were saved. Review instructions describe simulated functionality honestly; public support/privacy URLs, privacy disclosures and final review requirements remain separate release gates.
+
+
+## Photo backup continuity — build 4
+- Signed simulator suite: 77 tests passed, zero failures, after final runtime changes.
+- Seven new tests cover durable completion replay, edited asset invalidation, destination/account/marker isolation, torn writes, explicit verification reset, rejected invalid records, 27,000 local entries, and app-owned store identity (some are combined in one test).
+- The 27,000-entry local journal load and membership check took approximately 0.05 seconds on the Mac's iOS simulator. Excludes PhotoKit enumeration, network connection, receipt migration, export and transfer.
+- Initial unsigned test run failed three existing Keychain/session tests because signing entitlements were absent; rerun with signing passed all 77.
+- New uploads retain byte-for-byte read-back verification before atomic commit and durable local completion.
+- Real iPhone background scheduling, lock-screen operation, system cancellation, and actual iCloud/SMB transfers remain hardware acceptance checks. No personal library was read or uploaded by these tests.

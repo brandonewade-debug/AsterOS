@@ -89,19 +89,24 @@ enum PhotoBackupPolicy {
     @Published private(set) var browsedPath: String?
     @Published private(set) var busy = false
     @Published private(set) var backingUp = false
-    @Published private(set) var status = "Choose a backup destination"
+    @Published private(set) var status = "Choose a backup destination" { didSet { reportExecution() } }
+    @Published private(set) var backgroundStatus = ""
     @Published private(set) var count = 0
-    @Published private(set) var completed = 0
-    @Published private(set) var total = 0
-    @Published private(set) var progress: Double = 0
+    @Published private(set) var completed = 0 { didSet { reportExecution() } }
+    @Published private(set) var total = 0 { didSet { reportExecution() } }
+    @Published private(set) var progress: Double = 0 { didSet { reportExecution() } }
     @Published private(set) var limited = false
     @Published var error: String?
     private let defaults: UserDefaults
     private let serverID: UUID
     private let serverAddress: URL?
     private var client: SMBClient?
+    private var activeShareIdentity: (host: String, username: String)?
     private var watchdog: Task<Void, Never>?
     private var task: Task<Void, Never>?
+    private var runID = UUID()
+    private var execution: PhotoBackupExecution?
+    private var pauseReason = "Paused · tap Back up now to continue"
     private var paused = false
     private var timedOut = false
     private let settingsKey: String
@@ -168,6 +173,7 @@ enum PhotoBackupPolicy {
         guard let connection = ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) else {
             throw AppError.message("Connect your Unraid share account in Files first, then return here.")
         }
+        activeShareIdentity = (connection.host, connection.username)
         _ = try await TailnetStore.shared.prepare(for: connection.host)
         try check()
         let result = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
@@ -176,8 +182,18 @@ enum PhotoBackupPolicy {
         try check(); touch()
         return result
     }
+    private func reportExecution() {
+        execution?.update(completed: completed, total: total, fraction: progress, status: status)
+    }
+    func sceneChanged(_ phase: ScenePhase) {
+        if phase == .active { refreshPhotoCount() }
+        if phase == .background, backingUp, execution?.allowsBackground != true {
+            pause(reason: "Paused by iOS · open AsterOS and tap Back up now to continue")
+        }
+    }
     private func finish() {
-        watchdog?.cancel(); watchdog = nil; client?.session.disconnect(); client = nil
+        execution?.finish(success: false); execution = nil
+        watchdog?.cancel(); watchdog = nil; client?.session.disconnect(); client = nil; activeShareIdentity = nil
         busy = false; backingUp = false; task = nil
     }
     func loadShares() async {
@@ -209,18 +225,24 @@ enum PhotoBackupPolicy {
             browsedPath = path
         } catch { self.error = error.localizedDescription }
     }
-    func start(limit: Int? = nil) {
+    func start(limit: Int? = nil, verifyExisting: Bool = false) {
         guard !busy else { return }
-        busy = true; backingUp = true; paused = false; timedOut = false; error = nil; completed = 0; progress = 0
+        runID = UUID()
+        busy = true; backingUp = true; paused = false; timedOut = false; error = nil; completed = 0; total = 0; progress = 0
         let destinationShare = share, destinationFolder = folder
         let destinationLayout = layout
-        task = Task { await backup(share: destinationShare, folder: destinationFolder, layout: destinationLayout, limit: limit) }
+        status = "Preparing backup…"; backgroundStatus = "Requesting background backup…"
+        execution = PhotoBackupExecution(stop: { [weak self] in
+            self?.pause(reason: "Paused by iOS or system Stop · tap Back up now to continue")
+        }, report: { [weak self] in self?.backgroundStatus = $0 })
+        task = Task { await backup(share: destinationShare, folder: destinationFolder, layout: destinationLayout, limit: limit, verifyExisting: verifyExisting) }
     }
-    func pause() {
+    func pause(reason: String = "Paused · tap Back up now to continue") {
         guard backingUp else { return }
+        pauseReason = reason
         paused = true; status = "Pausing…"; task?.cancel(); client?.session.disconnect()
     }
-    private func backup(share: String, folder: String, layout: PhotoFolderLayout, limit: Int?) async {
+    private func backup(share: String, folder: String, layout: PhotoFolderLayout, limit: Int?, verifyExisting: Bool) async {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("asteros-photos-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary); finish() }
         do {
@@ -242,6 +264,28 @@ enum PhotoBackupPolicy {
             }
             defaults.set(["share": share, "folder": folder], forKey: settingsKey)
             let folders = try await client.listDirectory(path: folder)
+            // One small destination marker protects against accidentally trusting a
+            // journal for a newly created/replaced backup root.
+            let markerName = ".asteros-backup-id"
+            let markerPath = folder.isEmpty ? markerName : folder + "/" + markerName
+            let marker: String
+            if let entry = folders.first(where: { $0.name == markerName }) {
+                guard !entry.isDirectory, entry.size <= 128 else { throw AppError.message("The backup destination marker is invalid.") }
+                let reader = client.fileReader(path: markerPath)
+                let data: Data
+                do { data = try await reader.read(offset: 0, length: 128); try await reader.close() }
+                catch { try? await reader.close(); throw error }
+                guard let value = String(data: data, encoding: .utf8), let uuid = UUID(uuidString: value) else { throw AppError.message("The backup destination marker is invalid.") }
+                marker = uuid.uuidString
+            } else {
+                marker = UUID().uuidString
+                let file = temporary.appendingPathComponent("destination-id")
+                let data = Data(marker.utf8); try data.write(to: file, options: .atomic)
+                try await upload(file, to: markerPath, client: client, size: UInt64(data.count))
+            }
+            guard let connection = activeShareIdentity else { throw AppError.message("Reconnect your share account before backing up.") }
+            let scope = PhotoBackupIndex.scope(server: settingsKey, host: connection.host, account: connection.username, share: share, folder: folder, marker: marker)
+            let journal = try PhotoBackupIndex(scope: scope, reset: verifyExisting)
             let legacyFolders = Set(folders.filter(\.isDirectory).map(\.name))
             var cachedFolders: [String: Set<String>] = [folder: legacyFolders]
             var cachedSizes: [String: [String: UInt64]] = [:]
@@ -250,11 +294,24 @@ enum PhotoBackupPolicy {
             defaults.set(timeZone.identifier, forKey: timeZoneKey)
             let fetched = assets(); count = fetched.count
             total = min(count, max(0, limit ?? count))
-            saveCheckpoint(share: share, folder: folder)
+            status = verifyExisting ? "Verifying existing backup…" : "Finding new photos on this device…"
+            var pending: [(index: Int, identity: String)] = []
+            var locallyCompleted = 0
+            // Local-only lookups: no exports, remote stats, or receipt reads for
+            // items already committed by this device to this destination.
             for index in 0..<total {
-                try check(); touch()
+                if index % 128 == 0 { await Task.yield(); try check() }
                 let asset = fetched.object(at: fetched.count - total + index)
                 let identity = PhotoBackupPolicy.identifier(asset.localIdentifier, modified: asset.modificationDate)
+                if journal.contains(identity) { locallyCompleted += 1 }
+                else { pending.append((index, identity)) }
+            }
+            completed = locallyCompleted
+            progress = 0
+            saveCheckpoint(share: share, folder: folder)
+            for (index, identity) in pending {
+                try check(); touch()
+                let asset = fetched.object(at: fetched.count - total + index)
                 let resources = PHAssetResource.assetResources(for: asset)
                 guard !resources.isEmpty else { throw AppError.message("Photos did not provide the original resources for an item.") }
                 let legacy = legacyFolders.contains(identity)
@@ -310,7 +367,9 @@ enum PhotoBackupPolicy {
                     guard let receipt = try? JSONDecoder().decode(PhotoBackupReceipt.self, from: bytes), receipt.matches(sizes, asset: identity) else {
                         throw AppError.message("A previous backup is missing files or has changed. Choose a new folder to make another complete copy; existing files were left untouched.")
                     }
-                    completed += 1
+                    try check()
+                    try journal.record(identity)
+                    progress = 0; completed += 1
                     saveCheckpoint(share: share, folder: folder)
                     continue
                 }
@@ -323,8 +382,7 @@ enum PhotoBackupPolicy {
                     let file = temporary.appendingPathComponent(UUID().uuidString)
                     status = "Preparing \(index + 1) of \(total) from Photos…"; progress = 0
                     watchdog?.cancel()
-                    let options = PHAssetResourceRequestOptions(); options.isNetworkAccessAllowed = true
-                    try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
+                    try await PhotoResourceExport.write(resource, to: file)
                     try check(); touch()
                     let size = UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
                     if let previous = sizes[name] {
@@ -356,24 +414,32 @@ enum PhotoBackupPolicy {
                 try await upload(file, to: path + "/" + receiptName, client: client, size: UInt64(encoded.count))
                 for record in records { cachedSizes[path, default: [:]][record.name] = record.size }
                 cachedSizes[path, default: [:]][receiptName] = UInt64(encoded.count)
-                completed += 1
+                try journal.record(identity)
+                progress = 0; completed += 1
                 saveCheckpoint(share: share, folder: folder)
             }
             saveCheckpoint(share: share, folder: folder, finished: true)
             progress = 1; status = "Backup complete · \(completed) items"
+            execution?.finish(success: true)
         } catch {
-            if paused || error is CancellationError { status = "Paused · tap Back up now to continue" }
+            if paused || error is CancellationError { status = pauseReason }
             else { status = "Backup stopped"; self.error = error.localizedDescription }
         }
     }
     private func upload(_ file: URL, to destination: String, client: SMBClient, size: UInt64) async throws {
         let parent = destination.split(separator: "/").dropLast().joined(separator: "/")
-        let staging = parent + "/.asteros-upload-" + UUID().uuidString
+        let staging = (parent.isEmpty ? "" : parent + "/") + ".asteros-upload-" + UUID().uuidString
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
         let writer = client.fileWriter(path: staging)
         do {
             touch()
-            try await writer.upload(fileHandle: handle) { value in Task { @MainActor [weak self] in self?.progress = value; self?.touch() } }
+            let uploadRun = runID
+            try await writer.upload(fileHandle: handle) { value in
+                Task { @MainActor [weak self] in
+                    guard let self, self.runID == uploadRun, self.backingUp, !self.paused else { return }
+                    self.progress = value; self.touch()
+                }
+            }
             try await writer.close(); try check(); touch()
             let reader = client.fileReader(path: staging)
             let written: UInt64
@@ -403,18 +469,17 @@ enum PhotoBackupPolicy {
 struct PhotosView: View {
     @EnvironmentObject var app: AppStore
     var body: some View {
-        if let server = app.selected, !app.demo { PhotoBackupView(server: server, knownServerIDs: app.profiles.map(\.id)).id("photos-" + server.id.uuidString + "-\(app.preferencesRevision)") }
+        if let server = app.selected, !app.demo { PhotoBackupView(server: server, backup: app.photoBackup(for: server)).id("photos-" + server.id.uuidString + "-\(app.preferencesRevision)") }
         else { NavigationStack { ContentUnavailableView("Connect your server", systemImage: "photo", description: Text("Connect Unraid to set up photo backup to one of its shares.")).navigationTitle("Photos") } }
     }
 }
 struct PhotoBackupView: View {
     let server: ServerProfile
-    @StateObject private var backup: PhotoBackupStore
-    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var backup: PhotoBackupStore
     @Environment(\.openURL) private var openURL
     @State private var confirm = false
     @State private var choosingFolder = false
-    init(server: ServerProfile, knownServerIDs: [UUID]) { self.server = server; _backup = StateObject(wrappedValue: PhotoBackupStore(serverID: server.id, address: server.address, knownServerIDs: knownServerIDs)) }
+    @State private var confirmVerification = false
     var body: some View {
         NavigationStack {
             GlassForm {
@@ -451,19 +516,24 @@ struct PhotoBackupView: View {
                 }
                 Section {
                     Text(backup.status)
+                    if backup.backingUp { Text(backup.backgroundStatus).font(.caption).foregroundStyle(.secondary) }
                     if backup.backingUp { ProgressView(value: backup.progress); Text("\(backup.completed) of \(backup.total) items complete"); Button("Pause backup") { backup.pause() } }
                     else { Button("Back up now") { confirm = true }.buttonStyle(.borderedProminent).disabled(backup.busy || backup.share.isEmpty || backup.count == 0) }
+                    Button("Verify existing backup") { confirmVerification = true }.disabled(backup.busy || backup.share.isEmpty || backup.count == 0)
                     if let error = backup.error { Text(error).foregroundStyle(.orange) }
                 }
                 Section {
-                    Text("Keep the Photos screen open during backup. Leaving it pauses uploads; tap Back up now to continue. Completed items are skipped when their receipt and file sizes match. iCloud originals may need to download first and can use mobile data. Existing destination files are never overwritten.")
+                    Text("Backup continues while you use other tabs. On iOS 26, AsterOS requests background processing when you start a backup. iOS can pause it for resource limits or when you tap Stop; force-closing AsterOS stops it. Older iOS versions allow only limited background time. Open AsterOS and tap Back up now to resume.")
+                    Text("Completed items are remembered on this device, so normal resume checks only new or changed items. The first run after this update imports older receipts once. Use Verify existing backup after changing files on the server; it rereads receipts and file sizes and may take time. New uploads are still read back before being marked complete. iCloud originals may download first and can use mobile data. Existing files are never overwritten.")
                     Text("This first version backs up files and edit resources, not album organization. It does not delete photos or provide a one-tap Photos-library restore.")
                 }.font(.caption).foregroundStyle(.secondary)
             }.navigationTitle("Photos")
                 .sheet(isPresented: $choosingFolder) { PhotoBackupFolderPicker(backup: backup) }
                 .onChange(of: backup.share) { _, share in if !share.isEmpty { choosingFolder = true } }
-                .onChange(of: scenePhase) { _, phase in if phase == .background { backup.pause() }; if phase == .active { backup.refreshPhotoCount() } }
-                .onDisappear { backup.pause() }
+                .onAppear { backup.refreshPhotoCount() }
+                .confirmationDialog("Verify every existing backup item?", isPresented: $confirmVerification, titleVisibility: .visible) {
+                    Button("Verify and resume backup") { backup.start(verifyExisting: true) }
+                } message: { Text("This rebuilds the local completion index by reading server receipts and checking file sizes. For a large library it can take time. Normal Back up now skips this scan.") }
                 .confirmationDialog("Back up \(backup.count) accessible items?", isPresented: $confirm, titleVisibility: .visible) {
                     Button("Test latest 5 items") { backup.start(limit: 5) }
                     Button("Back up all accessible items") { backup.start() }

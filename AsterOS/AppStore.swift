@@ -17,6 +17,17 @@ import SwiftUI
     @Published private(set) var preferencesRevision = 0
     @Published private(set) var connectionStage: String?
     @Published private(set) var stageStarted: Date?
+    private var photoBackups: [UUID: PhotoBackupStore] = [:]
+    func photoBackup(for profile: ServerProfile) -> PhotoBackupStore {
+        if let store = photoBackups[profile.id] { return store }
+        let store = PhotoBackupStore(serverID: profile.id, address: profile.address, knownServerIDs: profiles.map(\.id), defaults: defaults)
+        photoBackups[profile.id] = store
+        return store
+    }
+    func photoBackupSceneChanged(_ phase: ScenePhase) {
+        for backup in photoBackups.values { backup.sceneChanged(phase) }
+    }
+    private func pausePhotoBackups() { for backup in photoBackups.values { backup.pause() } }
     private var previousServerID: UUID?
     private var generation = UUID()
     static func isCancellation(_ error: Error) -> Bool {
@@ -42,12 +53,14 @@ import SwiftUI
         defaults.set(selectedID?.uuidString, forKey: "selectedServer")
     }
     func select(_ id: UUID?) {
+        if id != selectedID { pausePhotoBackups() }
         generation = UUID(); demo = false; selectedID = id; connectionStage = nil; stageStarted = nil
         overview = nil; metrics = nil; containers = []; error = nil; dockerError = nil; metricsError = nil; lastUpdated = nil; loading = false
         persist()
     }
     func showDemo() {
         guard !demo, !operating else { return }
+        pausePhotoBackups()
         previousServerID = selectedID
         generation = UUID(); selectedID = nil; demo = true
         overview = .demo; metrics = .demo; containers = []
@@ -79,6 +92,7 @@ import SwiftUI
     }
     func removeSelected() throws {
         guard let id = selectedID else { select(profiles.first?.id); return }
+        photoBackups[id]?.pause(); photoBackups.removeValue(forKey: id)
         try DirectFilesStore.forget(serverID: id, address: selected?.address)
         try CredentialStore.remove(id)
         TerminalSessions.forget(id)
@@ -93,7 +107,9 @@ import SwiftUI
     }
     func importPreferences(_ archive: PreferencesArchive, serverID: UUID) throws {
         guard let index = profiles.firstIndex(where: { $0.id == serverID }), selectedID == serverID else { throw AppError.message("The selected server changed.") }
+        guard photoBackups[serverID]?.busy != true else { throw AppError.message("Pause photo backup before restoring preferences.") }
         try archive.apply(to: profiles[index])
+        photoBackups.removeValue(forKey: serverID)
         profiles[index].apps = archive.apps; persist(); preferencesRevision += 1
     }
     func removeApp(_ id: UUID) {
