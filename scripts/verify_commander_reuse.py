@@ -44,6 +44,25 @@ touch "$destination/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
     second = run()
     assert 'Reconnecting with installed Desktop Commander' in second
     assert log.read_text().splitlines() == ['npm', 'node', 'node']
+    # Direct storage is used only for one valid backing location with a matching entry.
+    mounts = root / 'mounts'
+    direct = mounts / 'dockercache/appdata/asteros/desktop-commander'
+    shutil.copytree(marker.parent, direct)
+    executable(bindir / 'getfattr', 'printf "%s" "${ASTER_TEST_POOL:-dockercache}"\n')
+    test_script = test_script.replace('/mnt/$aster_pool/', str(mounts) + '/$aster_pool/')
+    command = "bash -c '" + test_script.replace("'", "'\"'\"'") + "'"
+    assert 'Using direct storage' in run()
+    # Reject ambiguous, reserved and malformed locations; keep the working share route.
+    for invalid in ['dockercache,disk1', '../etc', 'user', 'user0']:
+        env['ASTER_TEST_POOL'] = invalid
+        assert 'Using direct storage' not in run()
+    env.pop('ASTER_TEST_POOL')
+    direct_entry = direct / 'node_modules/@wonderwhy-er/desktop-commander/dist/index.js'
+    direct_entry.write_text('different installation')
+    assert 'Using direct storage' not in run()
+    direct_entry.unlink()
+    assert 'Using direct storage' not in run()
+    (bindir / 'getfattr').unlink()
     # Interrupted/failed installs must not be treated as completed.
     marker.unlink()
     (bindir / 'npm.saved').rename(bindir / 'npm')
@@ -56,7 +75,7 @@ touch "$destination/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
     before = log.read_text().splitlines().count('npm')
     assert 'Reconnecting with existing Desktop Commander' in run()
     assert log.read_text().splitlines().count('npm') == before
-print('PASS: first install, download-free restart, failed-install recovery, existing installation reuse')
+print('PASS: installation reuse, direct storage selection, invalid/ambiguous/missing storage fallback and failed-install recovery')
 
 # Exercise the actual Node bootstrap without starting an agent or using a network.
 node = shutil.which('node')
