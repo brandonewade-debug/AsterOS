@@ -320,6 +320,60 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: false))
     }
 
+    @MainActor func testNativeEditorDraftValidationAndSecretIsolation() async throws {
+        let loaded = expectation(description: "Native editor fixture")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 780))
+        web.navigationDelegate = delegate
+        web.loadHTMLString(#"""
+        <input name="loginPassword" type="password" value="login-secret">
+        <div id="canvas"><form method="POST" onsubmit="window.applied++;return false">
+        <input type="hidden" name="csrf_token" value="csrf-secret" data-aster-editor-i-d="hidden">
+        <dl><dt>Name:</dt><dd><input name="contName" value="Plex" required></dd></dl>
+        <div style="display:none"><input name="contExtraParams" value="--read-only"></div>
+        <div id="ConfigNum1"><input type="hidden" name="confName[]" value="API credential"><input type="password" name="confValue[]" value="config-secret"><button type="button" onclick="removeConfig(1)">Remove</button></div>
+        <select name="contNetwork"><option value="bridge">Bridge</option><option value="host">Host</option></select>
+        <a href="javascript:addConfigPopup()">Add configuration</a>
+        <button type="button" onclick="window.applied++">Unsafe action</button>
+        <input type="submit" value="Apply"></form></div>
+        <div class="ui-dialog" style="display:none"><span class="ui-dialog-title">Add configuration</span><div id="dialogAddConfig"><label>Name<input id="newName"></label></div><div class="ui-dialog-buttonpane"><button onclick="this.closest('.ui-dialog').style.display='none'">Cancel</button></div></div>
+        <script>window.applied=0;function addConfigPopup(){document.querySelector('.ui-dialog').style.display='block'}function removeConfig(n){document.getElementById('ConfigNum'+n).remove()}</script>
+        """#, baseURL: URL(string: "https://server.invalid/Docker/UpdateContainer"))
+        await fulfillment(of: [loaded], timeout: 10)
+        func snapshot() async throws -> EditorForm {
+            let json = try await web.callAsyncJavaScript(NativeEditorBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as! String
+            XCTAssertFalse(json.contains("login-secret")); XCTAssertFalse(json.contains("csrf-secret"))
+            return try JSONDecoder().decode(EditorForm.self, from: Data(json.utf8))
+        }
+        let form = try await snapshot()
+        XCTAssertEqual(form.fields.count, 3)
+        XCTAssertEqual(form.fields.first { $0.kind == "password" }?.label, "API credential")
+        XCTAssertEqual(form.actions.count, 2)
+        let name = try XCTUnwrap(form.fields.first { $0.label == "Name" })
+        let updated = try await web.callAsyncJavaScript(NativeEditorBridge.update, arguments: ["fieldID": name.id, "value": "", "checked": false, "values": []], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(updated, "")
+        let invalid = try await web.callAsyncJavaScript(NativeEditorBridge.apply, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertFalse(invalid?.isEmpty ?? true)
+        _ = try await web.callAsyncJavaScript(NativeEditorBridge.update, arguments: ["fieldID": name.id, "value": "Plex New", "checked": false, "values": []], in: nil, contentWorld: .page)
+        let denied = try await web.callAsyncJavaScript(NativeEditorBridge.update, arguments: ["fieldID": "hidden", "value": "tampered", "checked": false, "values": []], in: nil, contentWorld: .page) as? String
+        XCTAssertFalse(denied?.isEmpty ?? true)
+        let add = try XCTUnwrap(form.actions.first { $0.label == "Add configuration" })
+        _ = try await web.callAsyncJavaScript(NativeEditorBridge.action, arguments: ["actionID": add.id], in: nil, contentWorld: .page)
+        let dialog = try await snapshot()
+        XCTAssertTrue(dialog.dialog); XCTAssertEqual(dialog.fields.count, 1)
+        let blocked = try await web.callAsyncJavaScript(NativeEditorBridge.apply, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertFalse(blocked?.isEmpty ?? true)
+        _ = try await web.callAsyncJavaScript(NativeEditorBridge.action, arguments: ["actionID": try XCTUnwrap(dialog.actions.first).id], in: nil, contentWorld: .page)
+        let before = try await web.evaluateJavaScript("window.applied") as? Int
+        XCTAssertEqual(before, 0)
+        let apply = try await web.callAsyncJavaScript(NativeEditorBridge.apply, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(apply, "")
+        let after = try await web.evaluateJavaScript("window.applied") as? Int
+        XCTAssertEqual(after, 1)
+        let csrf = try await web.evaluateJavaScript("document.querySelector('[name=csrf_token]').value") as? String
+        XCTAssertEqual(csrf, "csrf-secret")
+        web.navigationDelegate = nil
+    }
     @MainActor func testContainerEditorUsesSavedTemplateAndAdvancedToggleDoesNotSubmit() async throws {
         let loaded = expectation(description: "Editor fixture loaded")
         let delegate = CatalogFixtureLoader(loaded)
