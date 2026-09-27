@@ -639,6 +639,51 @@ final class AsterOSTests: XCTestCase {
         XCTAssertNil(model.editorAdvanced)
     }
 
+    @MainActor func testPluginFilterSeeksBeyondDockerOnlyPagesWithoutInstalling() async throws {
+        let loaded = expectation(description: "Plugin catalog fixture loaded")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero); web.navigationDelegate = delegate
+        web.loadHTMLString(#"""
+        <div id="cards"><div class="ca_holder" data-apppath="docker" data-appname="Docker"><span class="appDocker"></span></div></div>
+        <a class="pageRight" onclick="next()">Next</a>
+        <script>
+        var data={currentpage:1,searchInProgress:false}, jQuery={active:0};
+        window.installed=false; window.reviewed=false;
+        function next() {
+            data.currentpage++; jQuery.active=1;
+            setTimeout(()=>{
+                document.querySelector('#cards').innerHTML='<div class="ca_holder" data-apppath="driver" data-appname="Driver"><span class="appDriver"></span><button class="infoButton" onclick="window.reviewed=true">Info</button><button onclick="window.installed=true">Install</button></div>';
+                document.querySelector('.pageRight').classList.add('pageNavNoClick');
+                jQuery.active=0;
+            },20);
+        }
+        </script>
+        """#, baseURL: URL(string: "https://catalog.invalid/Apps"))
+        await fulfillment(of: [loaded], timeout: 10)
+        let state = try await web.callAsyncJavaScript(NativeCatalogBridge.seekKind, arguments: ["kind": "plugin", "forward": true], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(state, "ready")
+        let json = try await web.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as! String
+        let page = try JSONDecoder().decode(NativeCatalogPage.self, from: Data(json.utf8))
+        let plugin = try XCTUnwrap(page.items.first)
+        XCTAssertEqual(plugin.name, "Driver"); XCTAssertTrue(plugin.isPlugin)
+        _ = try await web.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": plugin.id], in: nil, contentWorld: .page)
+        let reviewed = try await web.evaluateJavaScript("window.reviewed") as? Bool
+        let installed = try await web.evaluateJavaScript("window.installed") as? Bool
+        XCTAssertEqual(reviewed, true); XCTAssertEqual(installed, false)
+        let end = try await web.callAsyncJavaScript(NativeCatalogBridge.seekKind, arguments: ["kind": "docker", "forward": true], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(end, "end")
+        web.navigationDelegate = nil
+    }
+
+    func testOlderCatalogCacheDefaultsToDockerAndPluginKindSurvivesRoundTrip() throws {
+        let old = #"{"id":"old","name":"Old","author":"","category":"","summary":"","icon":"","section":"","note":""}"#
+        let legacy = try JSONDecoder().decode(CatalogApp.self, from: Data(old.utf8))
+        XCTAssertFalse(legacy.isPlugin)
+        var plugin = legacy; plugin.kind = "plugin"
+        let restored = try JSONDecoder().decode(CatalogApp.self, from: JSONEncoder().encode(plugin))
+        XCTAssertTrue(restored.isPlugin)
+    }
+
     @MainActor func testCatalogCategoriesUseServerMenuAndKeepPagingInCategory() async throws {
         let loaded = expectation(description: "Category fixture loaded")
         let delegate = CatalogFixtureLoader(loaded)
@@ -691,7 +736,7 @@ final class AsterOSTests: XCTestCase {
         web.navigationDelegate = nil
     }
 
-    @MainActor func testNativeCatalogReadsDockerCardsWithoutLoginDataOrInstalling() async throws {
+    @MainActor func testNativeCatalogReadsDockerAndPluginCardsWithoutLoginDataOrInstalling() async throws {
         let loaded = expectation(description: "Catalog fixture loaded")
         let delegate = CatalogFixtureLoader(loaded)
         let web = WKWebView(frame: .zero)
@@ -713,7 +758,8 @@ final class AsterOSTests: XCTestCase {
         let json = try XCTUnwrap(result as? String)
         XCTAssertFalse(json.contains("never-export-this"))
         let page = try JSONDecoder().decode(NativeCatalogPage.self, from: Data(json.utf8))
-        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertTrue(page.items.last?.isPlugin == true)
         XCTAssertEqual(page.items.first?.name, "Media & Photos")
         XCTAssertEqual(page.items.first?.author, "Example Author")
         XCTAssertTrue(page.next); XCTAssertFalse(page.previous)

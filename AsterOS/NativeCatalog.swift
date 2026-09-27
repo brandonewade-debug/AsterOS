@@ -1,6 +1,11 @@
 import SwiftUI
 import WebKit
 
+enum CatalogKind: String, CaseIterable, Identifiable {
+    case all, docker, plugin
+    var id: String { rawValue }
+    var title: String { switch self { case .all: "All"; case .docker: "Docker"; case .plugin: "Plugins" } }
+}
 struct CatalogApp: Codable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -10,6 +15,8 @@ struct CatalogApp: Codable, Identifiable, Hashable {
     let icon: String
     let section: String
     let note: String
+    var kind: String? = nil
+    var isPlugin: Bool { kind == "plugin" || kind == "driver" || kind == "language" }
 }
 struct CatalogSnapshot: Codable {
     let address: URL
@@ -47,7 +54,7 @@ enum NativeCatalogBridge {
     const clean = value => (value || '').replace(/\s+/g, ' ').trim();
     const cards = Array.from(document.querySelectorAll('.ca_holder[data-apppath][data-appname]'));
     const seen = new Set();
-    const items = cards.filter(card => !card.classList.contains('ca_repoPopup') && !!card.querySelector('.appDocker')).map(card => {
+    const items = cards.filter(card => !card.classList.contains('ca_repoPopup') && !!card.querySelector('.appDocker, .appPlugin, .appDriver, .appLanguage')).map(card => {
         const id = card.getAttribute('data-apppath') + '|' + card.getAttribute('data-appname');
         if (seen.has(id)) return null; seen.add(id);
         const text = selector => clean(card.querySelector(selector)?.textContent);
@@ -57,7 +64,8 @@ enum NativeCatalogBridge {
         const section = clean(parent?.getAttribute('data-des') || 'Discover');
         const notes = Array.from(card.querySelectorAll('.cardWarning, .installedCardText, .betaPopupText')).map(el => clean(el.getAttribute('title') || el.textContent)).filter(Boolean).join(' · ');
         return {id, name: clean(card.getAttribute('data-appname')), author: text('.ca_author') || clean(card.getAttribute('data-repository')),
-            category: text('.cardCategory'), summary: text('.cardDesc'), icon, section, note: notes};
+            category: text('.cardCategory'), summary: text('.cardDesc'), icon, section, note: notes,
+            kind: card.querySelector('.appDriver') ? 'driver' : card.querySelector('.appLanguage') ? 'language' : card.querySelector('.appPlugin') ? 'plugin' : 'docker'};
     }).filter(Boolean).slice(0, 500);
     const enabled = selector => Array.from(document.querySelectorAll(selector)).some(el => !el.classList.contains('pageNavNoClick') && el.hasAttribute('onclick'));
     const categories = [];
@@ -89,6 +97,30 @@ enum NativeCatalogBridge {
     document.querySelectorAll('.selectedMenu').forEach(el => el.classList.remove('selectedMenu'));
     menu.click();
     return true;
+    """#
+    // CA versions without a server-side type filter still paginate their full
+    // result set. Seek matching pages instead of treating the first page as all.
+    static let seekKind = #"""
+    if (kind === 'all') return 'ready';
+    const deadline = Date.now() + 25000;
+    const sleep = () => new Promise(resolve => setTimeout(resolve, 150));
+    const busy = () => (typeof data !== 'undefined' && !!data.searchInProgress) || (typeof jQuery !== 'undefined' && jQuery.active > 0);
+    const matches = () => Array.from(document.querySelectorAll('.ca_holder[data-apppath][data-appname]'))
+        .some(card => !card.classList.contains('ca_repoPopup') && card.querySelector(kind === 'plugin' ? '.appPlugin, .appDriver, .appLanguage' : '.appDocker'));
+    while (Date.now() < deadline) {
+        await sleep();
+        if (busy()) continue;
+        if (matches()) return 'ready';
+        const selector = forward ? '.pageRight' : '.pageLeft';
+        const button = Array.from(document.querySelectorAll(selector)).find(el => !el.classList.contains('pageNavNoClick') && el.hasAttribute('onclick'));
+        if (!button) return 'end';
+        const before = typeof data !== 'undefined' ? data.currentpage : null;
+        button.click();
+        await sleep();
+        while (busy() && Date.now() < deadline) await sleep();
+        if (before != null && typeof data !== 'undefined' && data.currentpage === before && !busy()) return 'unavailable';
+    }
+    return 'pending';
     """#
     static let page = #"""
     const selector = forward ? '.pageRight' : '.pageLeft';
@@ -143,7 +175,7 @@ struct NativeAppStoreView: View {
     @State private var loginOnly = false
     @State private var discardEditor = false
     @State private var categoryPicker: CatalogCategorySelection?
-    private var visible: [CatalogApp] { model.catalogItems }
+    private var visible: [CatalogApp] { model.catalogItems.filter { model.catalogKind == .all || ($0.isPlugin ? model.catalogKind == .plugin : model.catalogKind == .docker) } }
     var body: some View {
         NavigationStack {
             ZStack {
@@ -166,13 +198,18 @@ struct NativeAppStoreView: View {
                                     Text("Community Applications · \(server.name)").font(.caption).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 10)
+                            Picker("App type", selection: Binding(get: { model.catalogKind }, set: { value in
+                                Task { await model.selectCatalogKind(value, query: query) }
+                            })) {
+                                ForEach(CatalogKind.allCases) { kind in Text(kind.title).tag(kind) }
+                            }.pickerStyle(.segmented).disabled(model.catalogBusy || model.catalogFiltering || !model.catalogLive)
                             HStack {
                                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                                 TextField("Search Unraid apps", text: $query).disabled(!model.catalogLive).submitLabel(.search).autocorrectionDisabled().textInputAutocapitalization(.never)
                                     .onSubmit { Task { await model.searchCatalog(query) } }
-                                Button { Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy || !model.catalogLive)
+                                Button { Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy || model.catalogFiltering || !model.catalogLive)
                             }.padding(16).asterGlass(radius: 28)
-                            if model.catalogBusy || model.loading || model.catalogRefreshing { ProgressView(model.catalogReady ? "Refreshing apps…" : "Loading apps from your server…").frame(maxWidth: .infinity) }
+                            if model.catalogBusy || model.catalogFiltering || model.loading || model.catalogRefreshing { ProgressView(model.catalogReady ? "Refreshing apps…" : "Loading apps from your server…").frame(maxWidth: .infinity) }
                             if model.catalogReady && !model.catalogLive { Text("You can browse these listings while the live catalog refreshes.").font(.caption).foregroundStyle(.secondary) }
                             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
                             if model.needsCatalogLogin {
@@ -189,10 +226,12 @@ struct NativeAppStoreView: View {
                                         Button {
                                             categoryPicker = CatalogCategorySelection(categories: model.catalogCategories, selectedID: model.catalogCategory?.id)
                                         } label: { Label("Category", systemImage: "line.3.horizontal.decrease") }
-                                        .font(.caption).disabled(model.catalogBusy || !model.catalogLive)
+                                        .font(.caption).disabled(model.catalogBusy || model.catalogFiltering || !model.catalogLive)
                                     }
                                 }
-                                if visible.isEmpty { ContentUnavailableView.search(text: query) }
+                                if visible.isEmpty && !model.catalogBusy && !model.catalogFiltering {
+                                    ContentUnavailableView("No matching apps on this page", systemImage: "magnifyingglass", description: Text(model.catalogNext ? "Use Next to continue through the catalog." : "Try another category, search, or app type."))
+                                }
                                 LazyVStack(spacing: 24) {
                                     ForEach(visible) { app in
                                         Button { selected = app } label: {
@@ -200,6 +239,7 @@ struct NativeAppStoreView: View {
                                                 CatalogArtwork(app: app)
                                                 VStack(alignment: .leading, spacing: 5) {
                                                     Text(app.name).font(.headline).foregroundStyle(.primary)
+                                                    Text(app.isPlugin ? "Plugin" : "Docker").font(.caption2).foregroundStyle(.secondary)
                                                     Text(app.category.isEmpty ? app.author : app.category).font(.caption).foregroundStyle(.mint)
                                                     Text(app.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                                                 }.frame(maxWidth: .infinity, alignment: .leading)
@@ -209,9 +249,9 @@ struct NativeAppStoreView: View {
                                     }
                                 }
                                 HStack {
-                                    Button("Previous") { Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy || !model.catalogLive)
+                                    Button("Previous") { Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy || model.catalogFiltering || !model.catalogLive)
                                     Spacer()
-                                    Button("Next") { Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy || !model.catalogLive)
+                                    Button("Next") { Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy || model.catalogFiltering || !model.catalogLive)
                                 }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                                 Text("Browse all apps in a category. Use Next to see more results.").font(.caption2).foregroundStyle(.secondary)
                             } else if !model.catalogRefreshing && !model.needsCatalogLogin && model.error != nil {
@@ -248,12 +288,12 @@ struct NativeAppStoreView: View {
                                 if !app.category.isEmpty { Text(app.category).font(.subheadline).foregroundStyle(.mint) }
                                 Text(app.summary.isEmpty ? "No description supplied by this template." : app.summary)
                                 if !app.note.isEmpty { Label(app.note, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary) }
-                                Button("Review installation in Unraid") {
+                                Button(app.isPlugin ? "Review plugin installation" : "Review installation in Unraid") {
                                     selected = nil; loginOnly = false; showServer = true
                                     Task { await model.reviewCatalogApp(app) }
-                                }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(!model.catalogLive || model.catalogBusy)
+                                }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(!model.catalogLive || model.catalogBusy || model.catalogFiltering)
                                 if !model.catalogLive { Text("Installation becomes available when the live catalog is ready.").font(.caption).foregroundStyle(.secondary) }
-                                Text("Review the app’s requirements, then configure its ports, paths and settings in AsterOS before installing.").font(.caption).foregroundStyle(.secondary)
+                                Text(app.isPlugin ? "Plugins run directly on Unraid. Review the server’s requirements and press Install in its installer. Progress, errors, and any restart instructions appear there. Plugin settings are available after installation." : "Review the app’s requirements, then configure its ports, paths and settings in AsterOS before installing.").font(.caption).foregroundStyle(.secondary)
                             }.padding(24)
                         }.background { AsterBackdrop() }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                             .toolbar { Button("Done") { selected = nil } }
