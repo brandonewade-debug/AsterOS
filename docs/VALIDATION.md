@@ -114,3 +114,12 @@ The user's terminal reached the saved-installation branch but showed no Desktop 
 AsterOS now prints the Node version before importing the installed CLI, reports import exceptions, and warns after 20 seconds if package import remains pending. It preserves the CLI argv and saved session location. The native status reports delayed startup after 30 seconds without treating it as a confirmed failure or launching another process. Only a Device ready message after the current invocation marker confirms startup; historical scrollback cannot do so. Stop remains scoped to the foreground terminal.
 
 Validation includes reuse/install shell fixtures, real Node bootstrap fixtures for argv and import failures, and the WebKit regression for historical readiness output. Live reconnect on Unraid still requires verification; diagnostic success must not be presented as a connection fix.
+
+
+### Desktop Commander direct storage startup (2026-09-27)
+
+After the agent reconnected, read-only measurements on Unraid found the pinned CLI's `remote --help` package load took 39.740 seconds through `/mnt/user/appdata`, versus 1.154 seconds through the same installation on `/mnt/dockercache/appdata`. The appdata share uses only that cache pool. These measure package loading, not a complete remote login. No second remote agent was started.
+
+The launcher now asks Unraid for the installation directory's `system.LOCATION`, accepts only a single safe pool/disk name (excluding user/user0), checks node_modules has the same backing location, requires the completed-install marker, and compares the CLI entry before using the direct mount path. Missing tools, ambiguous/invalid locations, absent files or a different entry retain the original share path. Installation remains in appdata; no files, credentials, shares or storage settings are moved or changed.
+
+Shell fixtures cover direct path selection and invalid, ambiguous, absent and mismatched backing paths. Real Node bootstrap and targeted terminal policy/status tests also pass. Full remote reconnection timing should be checked on the next user Start; the running agent is left alone.
