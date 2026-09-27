@@ -17,6 +17,33 @@ enum TerminalPolicy {
     }
 }
 enum TerminalBridge {
+    static let appearance = #"""
+    let viewport = document.querySelector('meta[name="viewport"]');
+    if (!viewport) { viewport = document.createElement('meta'); viewport.name = 'viewport'; document.head.appendChild(viewport); }
+    viewport.content = 'width=device-width, initial-scale=1, viewport-fit=cover';
+    if (!document.getElementById('aster-terminal-style')) {
+      const style = document.createElement('style'); style.id = 'aster-terminal-style';
+      style.textContent = 'html,body{margin:0;width:100%;height:100%;background:#101217;overflow:hidden}#terminal{box-sizing:border-box;width:100%;height:100%;padding:10px}.xterm-viewport{scrollbar-width:thin}';
+      document.head.appendChild(style);
+    }
+    const term = window.term;
+    if (!term) return false;
+    if (term.options.fontSize !== fontSize || term.options.theme?.background !== '#101217') {
+      term.options.fontSize = fontSize;
+      term.options.fontFamily = 'ui-monospace, Menlo, monospace';
+      term.options.lineHeight = 1.2;
+      term.options.cursorBlink = true;
+      term.options.theme = {...term.options.theme,background:'#101217',foreground:'#e8edf2',cursor:'#27dbc9',selectionBackground:'#245651'};
+      if (typeof term.fit === 'function') requestAnimationFrame(() => term.fit());
+    }
+    if (!window.asterTerminalResize) {
+      const fit = () => { if (typeof window.term?.fit === 'function') window.term.fit(); };
+      window.asterTerminalResize = new ResizeObserver(fit);
+      window.asterTerminalResize.observe(document.documentElement);
+      window.visualViewport?.addEventListener('resize', fit);
+    }
+    return true;
+    """#
     static let observeSocket = #"""
     if (location.pathname.includes('/webterminal/ttyd/')) {
       const OriginalSocket = window.WebSocket;
@@ -78,6 +105,22 @@ enum TerminalBridge {
     @Published private(set) var loading = true
     @Published private(set) var commanderState = "idle"
     @Published var error: String?
+    @Published private(set) var fontSize = min(24, max(12, UserDefaults.standard.integer(forKey: "terminalFontSize") == 0 ? 15 : UserDefaults.standard.integer(forKey: "terminalFontSize")))
+    func resizeText(_ delta: Int) {
+        fontSize = min(24, max(12, fontSize + delta))
+        UserDefaults.standard.set(fontSize, forKey: "terminalFontSize")
+        Task { await styleTerminal() }
+    }
+    private func styleTerminal() async {
+        guard onTerminal else { return }
+        _ = try? await webView.callAsyncJavaScript(TerminalBridge.appearance, arguments: ["fontSize": fontSize], in: nil, contentWorld: .page)
+    }
+    func showKeyboard() {
+        guard onTerminal else { return }
+        webView.becomeFirstResponder()
+        webView.evaluateJavaScript("window.term?.focus()", completionHandler: nil)
+    }
+    func hideKeyboard() { webView.endEditing(true) }
     var agentMayBeRunning: Bool { ["requested", "starting", "running", "stopping", "unknown"].contains(commanderState) }
     var statusText: String {
         switch commanderState {
@@ -99,7 +142,9 @@ enum TerminalBridge {
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 780), configuration: config)
         super.init()
         webView.navigationDelegate = self; webView.uiDelegate = self
-        webView.isOpaque = false; webView.backgroundColor = .black
+        webView.isOpaque = false; webView.backgroundColor = UIColor(red: 16/255, green: 18/255, blue: 23/255, alpha: 1)
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.bounces = false
         observer = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies }
     }
     var onTerminal: Bool { webView.url.map { TerminalPolicy.allows($0, server: server.address) && $0.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == TerminalPolicy.terminal(server.address).path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) } ?? false }
@@ -128,6 +173,7 @@ enum TerminalBridge {
     private func readStatus() async {
         guard onTerminal else { return }
         do {
+            await styleTerminal()
             let raw = try await webView.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
             guard onTerminal, let data = raw?.data(using: .utf8), let state = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
             ready = state["ready"] as? Bool == true
@@ -176,10 +222,12 @@ enum TerminalBridge {
         else { Task { await openTerminal() } }
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // WebKit/terminal helpers can create empty frames. These contain no remote content.
+        if action.request.url?.absoluteString == "about:blank" { decisionHandler(.allow); return }
         if let url = action.request.url, action.navigationType == .linkActivated, url.scheme == "https", url.user == nil, url.password == nil, !TerminalPolicy.allows(url, server: server.address) {
             UIApplication.shared.open(url); decisionHandler(.cancel); return
         }
-        guard let url = action.request.url, TerminalPolicy.allows(url, server: server.address) else { error = "Terminal navigation must stay on your server. Open Desktop Commander pairing in your browser."; decisionHandler(.cancel); return }
+        guard let url = action.request.url, TerminalPolicy.allows(url, server: server.address) else { if action.targetFrame?.isMainFrame != false { error = "This link cannot open inside the server terminal." }; decisionHandler(.cancel); return }
         decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
@@ -204,47 +252,80 @@ struct ServerTerminalSurface: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) { }
 }
 struct ServerTerminalView: View {
-    let commander: Bool
+    @State private var showCommander = false
+    private var commander: Bool { showCommander || model.agentMayBeRunning }
     @StateObject private var model: ServerTerminalModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirmStart = false
     @State private var confirmClose = false
-    init(server: ServerProfile, commander: Bool = false) {
-        self.commander = commander
+    @State private var showHelp = false
+    init(server: ServerProfile) {
         _model = StateObject(wrappedValue: ServerTerminalModel(server: server))
     }
     var body: some View {
-        VStack(spacing: 12) {
-            if commander {
-                HStack {
-                    Text(model.statusText).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    if model.agentMayBeRunning { Button("Stop") { Task { await model.interrupt() } }.disabled(!model.ready) }
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Circle().fill(model.ready ? Color.mint : Color.secondary).frame(width: 6, height: 6)
+                Text(commander ? model.statusText : (model.ready ? model.server.name : "Connecting…")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer()
+                if commander {
+                    if model.agentMayBeRunning { Button("Stop", role: .destructive) { Task { await model.interrupt() } }.disabled(!model.ready) }
                     else { Button("Start") { confirmStart = true }.disabled(!model.ready) }
-                }.padding(.horizontal)
-                Text("Start reuses the installed copy. On first use, it installs once in your appdata share. Pair only if Desktop Commander asks. Stop interrupts the agent started in this session; it does not stop agents launched elsewhere.").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
-            }
-            if model.loading { ProgressView("Opening terminal…") }
+                }
+            }.padding(.horizontal, 20).padding(.vertical, 10)
             if let error = model.error {
-                Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal)
-                if !model.agentMayBeRunning { Button("Reconnect") { model.connect() } }
+                HStack(alignment: .top) {
+                    Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                    Spacer()
+                    if !model.agentMayBeRunning { Button("Retry") { model.connect() }.font(.caption) }
+                }.padding(.horizontal, 20).padding(.bottom, 10)
             }
-            if model.signingIn { Text("Sign in to your server to open its terminal.").font(.caption) }
-            ServerTerminalSurface(model: model)
-                .opacity(model.terminalVisible || model.signingIn ? 1 : 0)
-            if !commander {
-                HStack {
+            if model.signingIn { Text("Sign in to your server to open its terminal.").font(.caption).padding(12) }
+            ZStack {
+                ServerTerminalSurface(model: model).opacity(model.terminalVisible || model.signingIn ? 1 : 0)
+                if model.loading { ProgressView("Opening terminal…") }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(red: 16/255, green: 18/255, blue: 23/255))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
                     Button("Ctrl+C") { Task { await model.interrupt() } }
                     Button("Tab") { Task { await model.sendKey("\t") } }
                     Button("Esc") { Task { await model.sendKey("\u{1b}") } }
                     Button { Task { await model.sendKey("\u{1b}[A") } } label: { Image(systemName: "arrow.up") }.accessibilityLabel("Previous command")
-                    Button("Return") { Task { await model.sendKey("\r") } }
-                }.font(.caption).disabled(!model.ready).padding(.bottom, 8)
-            }
-        }.background { AsterBackdrop() }
-        .navigationTitle(commander ? "Desktop Commander" : "Terminal").navigationBarTitleDisplayMode(.inline)
+                    Button { Task { await model.sendKey("\u{1b}[B") } } label: { Image(systemName: "arrow.down") }.accessibilityLabel("Next command")
+                    Button { Task { await model.sendKey("\r") } } label: { Image(systemName: "return") }.accessibilityLabel("Return")
+                    Button { model.hideKeyboard() } label: { Image(systemName: "keyboard.chevron.compact.down") }.accessibilityLabel("Hide keyboard")
+                }.font(.system(.subheadline, design: .monospaced)).buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.large).disabled(!model.ready).padding(10)
+            }.asterGlass(radius: 26).padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .navigationTitle("Terminal").navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbarBackground(Color(red: 16/255, green: 18/255, blue: 23/255), for: .navigationBar)
         .navigationBarBackButtonHidden(model.agentMayBeRunning)
-        .toolbar { if model.agentMayBeRunning { ToolbarItem(placement: .cancellationAction) { Button("Close") { confirmClose = true } } } }
+        .toolbar {
+            if model.agentMayBeRunning { ToolbarItem(placement: .cancellationAction) { Button("Close") { confirmClose = true } } }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Toggle("Desktop Commander", systemImage: "desktopcomputer", isOn: $showCommander)
+                    Divider()
+                    Button("Larger text", systemImage: "textformat.size.larger") { model.resizeText(1) }.disabled(model.fontSize >= 24)
+                    Button("Smaller text", systemImage: "textformat.size.smaller") { model.resizeText(-1) }.disabled(model.fontSize <= 12)
+                    Button("Keyboard", systemImage: "keyboard") { model.showKeyboard() }
+                    Button("Help", systemImage: "questionmark.circle") { showHelp = true }
+                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Terminal options")
+            }
+        }
+        .sheet(isPresented: $showHelp) {
+            NavigationStack {
+                GlassForm { Section {
+                    Text("Tap the terminal to type. The control strip provides terminal keys; change text size from the options menu.")
+                    if commander { Text("Start reuses the installed Desktop Commander. On first use it installs once in appdata. Follow its pairing link if requested. Stop interrupts only the agent started in this session. Wait for Agent exited before closing to confirm it stopped.") }
+                    Text("Terminal connections can pause when iOS puts AsterOS in the background.").foregroundStyle(.secondary)
+                } }.navigationTitle("Terminal help").navigationBarTitleDisplayMode(.inline).toolbar { Button("Done") { showHelp = false } }
+            }.presentationDetents([.medium, .large])
+        }
         .confirmationDialog("Start Desktop Commander on this server?", isPresented: $confirmStart, titleVisibility: .visible) {
             Button("Start Desktop Commander") { Task { await model.startCommander() } }
         } message: { Text("Reconnect using the installed Desktop Commander. If no copy is available, AsterOS installs version 0.2.51 once in appdata. Your paired AI clients get the terminal user’s permissions. Node.js is required; npm is needed only for installation.") }
