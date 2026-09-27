@@ -9,6 +9,10 @@ enum TerminalPolicy {
     static func allows(_ url: URL, server: URL) -> Bool {
         url.scheme == "https" && url.user == nil && url.password == nil && CatalogPolicy.sameOrigin(url, server)
     }
+    static func attachCommand(sessionID: UUID) -> String {
+        let name = "asteros-" + sessionID.uuidString.lowercased()
+        return "if command -v tmux >/dev/null 2>&1; then if (tmux -L asteros -f /dev/null has-session -t " + name + " 2>/dev/null || tmux -L asteros -f /dev/null new-session -d -s " + name + " 'exec bash --login'); then printf '\\nASTEROS_PERSIST_" + name + "\\n'; tmux -L asteros set-option -t " + name + " status off; tmux -L asteros attach-session -t " + name + "; else printf '\\nASTEROS_NO_TMUX_" + name + "\\n'; fi; else printf '\\nASTEROS_NO_TMUX_" + name + "\\n'; fi"
+    }
     static func commanderCommand(nonce: String) -> String? {
         guard UUID(uuidString: nonce) != nil else { return nil }
         // Foreground process, scoped to this terminal. Never kill other agents or install a boot service.
@@ -17,6 +21,29 @@ enum TerminalPolicy {
     }
 }
 enum TerminalBridge {
+    static let attach = #"""
+    const term = window.term;
+    if (!term?.input || window.asterTerminalSocket?.readyState !== 1) return 'waiting';
+    if (window.asterAttachSent) return window.asterPersistence || 'attaching';
+    const line = term.buffer.active.getLine(term.buffer.active.baseY + term.buffer.active.cursorY)?.translateToString(true) || '';
+    if (!/[#$]\s*$/.test(line)) return 'waiting';
+    window.asterSessionName = sessionName;
+    window.asterAttachSent = true; window.asterPersistence = 'attaching';
+    let output = '';
+    const listener = term.onWriteParsed(() => {
+      const buffer = term.buffer.active;
+      output = '';
+      for(let i = Math.max(0,buffer.length-100); i < buffer.length; i++) {
+        const row = buffer.getLine(i);
+        if (!row?.isWrapped) output += '\n';
+        output += row?.translateToString(false) || '';
+      }
+      if (output.split('\n').some(line => line.trim() === 'ASTEROS_PERSIST_' + sessionName)) window.asterPersistence = 'persistent';
+      if (output.split('\n').some(line => line.trim() === 'ASTEROS_NO_TMUX_' + sessionName)) window.asterPersistence = 'unavailable';
+      if (window.asterPersistence !== 'attaching') listener.dispose();
+    });
+    term.input(command + '\r', true); return 'attaching';
+    """#
     static let appearance = #"""
     let viewport = document.querySelector('meta[name="viewport"]');
     if (!viewport) { viewport = document.createElement('meta'); viewport.name = 'viewport'; document.head.appendChild(viewport); }
@@ -51,7 +78,23 @@ enum TerminalBridge {
         constructor(...args) {
           super(...args);
           const url = new URL(args[0], location.href);
-          if (url.host === location.host && url.pathname.startsWith(location.pathname)) window.asterTerminalSocket = this;
+          if (url.host === location.host && url.pathname.startsWith(location.pathname)) {
+            window.asterTerminalSocket = this;
+            window.asterAttachSent = false; window.asterPersistence = 'waiting';
+            let markerText = '';
+            this.addEventListener('message', event => {
+              // Parse only our fixed session markers, never export shell output.
+              if (!window.asterSessionName) return;
+              const inspect = text => {
+                markerText = (markerText + text).slice(-2048);
+                text = markerText;
+                if (new RegExp('(?:^|[\\r\\n])ASTEROS_PERSIST_' + window.asterSessionName + '(?:[\\r\\n]|$)').test(text)) window.asterPersistence = 'persistent';
+                if (new RegExp('(?:^|[\\r\\n])ASTEROS_NO_TMUX_' + window.asterSessionName + '(?:[\\r\\n]|$)').test(text)) window.asterPersistence = 'unavailable';
+              };
+              if (event.data instanceof ArrayBuffer) inspect(new TextDecoder().decode(event.data));
+              else if (typeof event.data === 'string') inspect(event.data);
+            });
+          }
         }
       };
     }
@@ -99,6 +142,10 @@ enum TerminalBridge {
     private var poll: Task<Void, Never>?
     private var connection: Task<Void, Never>?
     private var opening = false
+    private let persistentID = UUID()
+    @Published private(set) var persistence = "waiting"
+    private var resuming = false
+    private var commanderNonce: String?
     @Published private(set) var ready = false
     @Published private(set) var signingIn = false
     @Published private(set) var terminalVisible = false
@@ -148,6 +195,22 @@ enum TerminalBridge {
         observer = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies }
     }
     var onTerminal: Bool { webView.url.map { TerminalPolicy.allows($0, server: server.address) && $0.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == TerminalPolicy.terminal(server.address).path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) } ?? false }
+    func pauseObservation() { poll?.cancel(); poll = nil }
+    func resume() async {
+        guard !resuming else { return }
+        resuming = true; defer { resuming = false }
+        if webView.url == nil { connect(); return }
+        startObservation()
+        do {
+            webView.configuration.websiteDataStore.proxyConfigurations = try await TailnetStore.shared.prepare(for: server.address.host)
+            if onTerminal {
+                let state = (try? await webView.evaluateJavaScript("window.asterTerminalSocket?.readyState ?? -1")) as? Int
+                // Reopen only the transport. Never resend a user command or start another agent.
+                if state != 1 && state != 0 { webView.reload(); ready = false }
+                await readStatus()
+            }
+        } catch { self.error = "Waiting to reconnect the terminal. Your persistent server session can be reattached when the connection returns." }
+    }
     func connect() {
         guard connection == nil, !agentMayBeRunning else { return }
         loading = true; error = nil
@@ -161,6 +224,9 @@ enum TerminalBridge {
                 webView.load(URLRequest(url: TerminalPolicy.base(server.address).appendingPathComponent("Dashboard")))
             } catch { self.error = "Could not connect to your server. Check the private connection."; loading = false }
         }
+        startObservation()
+    }
+    private func startObservation() {
         if poll == nil {
             poll = Task { [weak self] in
                 while !Task.isCancelled {
@@ -176,9 +242,17 @@ enum TerminalBridge {
             await styleTerminal()
             let raw = try await webView.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
             guard onTerminal, let data = raw?.data(using: .utf8), let state = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            ready = state["ready"] as? Bool == true
+            let transportReady = state["ready"] as? Bool == true
+            if let nonce = commanderNonce, agentMayBeRunning {
+                _ = try await webView.callAsyncJavaScript("if (!window.asterCommander) window.asterCommander = {nonce,state:'unknown'};", arguments: ["nonce": nonce], in: nil, contentWorld: .page)
+            }
+            if transportReady {
+                let result = try await webView.callAsyncJavaScript(TerminalBridge.attach, arguments: ["sessionName": "asteros-" + persistentID.uuidString.lowercased(), "command": TerminalPolicy.attachCommand(sessionID: persistentID)], in: nil, contentWorld: .page) as? String
+                persistence = result ?? "waiting"
+            }
+            ready = transportReady && (persistence == "persistent" || persistence == "unavailable")
             if ready { loading = false }
-            if let value = state["state"] as? String, !(commanderState == "stopping" && ["requested", "starting", "running"].contains(value)) { commanderState = value }
+            if let value = state["state"] as? String, !(value == "idle" && agentMayBeRunning), !(commanderState == "stopping" && ["requested", "starting", "running"].contains(value)) { commanderState = value }
         } catch { ready = false; if agentMayBeRunning { commanderState = "unknown" } }
     }
     func startCommander() async {
@@ -187,7 +261,7 @@ enum TerminalBridge {
         guard let command = TerminalPolicy.commanderCommand(nonce: nonce) else { return }
         do {
             let sent = try await webView.callAsyncJavaScript(TerminalBridge.start, arguments: ["nonce": nonce, "command": command], in: nil, contentWorld: .page) as? Bool
-            if sent == true { commanderState = "requested"; error = nil }
+            if sent == true { commanderNonce = nonce; commanderState = "requested"; error = nil }
             else { error = "Wait for the server shell prompt before starting Desktop Commander. This terminal version may not support the shortcut." }
         } catch { commanderState = "unknown"; self.error = "Could not confirm whether the command was sent. Check the terminal before retrying." }
     }
@@ -246,12 +320,22 @@ enum TerminalBridge {
         session.stopObserving(); webView.navigationDelegate = nil; webView.uiDelegate = nil; webView.stopLoading(); webView.loadHTMLString("", baseURL: nil)
     }
 }
+@MainActor enum TerminalSessions {
+    private static var models: [UUID: ServerTerminalModel] = [:]
+    static func model(for server: ServerProfile) -> ServerTerminalModel {
+        if let model = models[server.id], model.server.address == server.address { return model }
+        models[server.id]?.close()
+        let model = ServerTerminalModel(server: server); models[server.id] = model; return model
+    }
+    static func forget(_ id: UUID) { models.removeValue(forKey: id)?.close() }
+}
 struct ServerTerminalSurface: UIViewRepresentable {
     let model: ServerTerminalModel
     func makeUIView(context: Context) -> WKWebView { model.webView }
     func updateUIView(_ view: WKWebView, context: Context) { }
 }
 struct ServerTerminalView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showCommander = false
     private var commander: Bool { showCommander || model.agentMayBeRunning }
     @StateObject private var model: ServerTerminalModel
@@ -260,13 +344,13 @@ struct ServerTerminalView: View {
     @State private var confirmClose = false
     @State private var showHelp = false
     init(server: ServerProfile) {
-        _model = StateObject(wrappedValue: ServerTerminalModel(server: server))
+        _model = StateObject(wrappedValue: TerminalSessions.model(for: server))
     }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Circle().fill(model.ready ? Color.mint : Color.secondary).frame(width: 6, height: 6)
-                Text(commander ? model.statusText : (model.ready ? model.server.name : "Connecting…")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(commander ? model.statusText : (model.ready ? model.server.name + (model.persistence == "persistent" ? " · Session retained" : "") : "Connecting…")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
                 if commander {
                     if model.agentMayBeRunning { Button("Stop", role: .destructive) { Task { await model.interrupt() } }.disabled(!model.ready) }
@@ -280,6 +364,7 @@ struct ServerTerminalView: View {
                     if !model.agentMayBeRunning { Button("Retry") { model.connect() }.font(.caption) }
                 }.padding(.horizontal, 20).padding(.bottom, 10)
             }
+            if model.persistence == "unavailable" { Text("Install tmux on Unraid to keep running commands alive if iOS drops the connection. This terminal is retained while available.").font(.caption).foregroundStyle(.orange).padding(.horizontal, 20) }
             if model.signingIn { Text("Sign in to your server to open its terminal.").font(.caption).padding(12) }
             ZStack {
                 ServerTerminalSurface(model: model).opacity(model.terminalVisible || model.signingIn ? 1 : 0)
@@ -309,6 +394,7 @@ struct ServerTerminalView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Toggle("Desktop Commander", systemImage: "desktopcomputer", isOn: $showCommander)
+                    Button("Reconnect terminal", systemImage: "arrow.clockwise") { Task { await model.resume() } }
                     Divider()
                     Button("Larger text", systemImage: "textformat.size.larger") { model.resizeText(1) }.disabled(model.fontSize >= 24)
                     Button("Smaller text", systemImage: "textformat.size.smaller") { model.resizeText(-1) }.disabled(model.fontSize <= 12)
@@ -322,7 +408,7 @@ struct ServerTerminalView: View {
                 GlassForm { Section {
                     Text("Tap the terminal to type. The control strip provides terminal keys; change text size from the options menu.")
                     if commander { Text("Start reuses the installed Desktop Commander. On first use it installs once in appdata. Follow its pairing link if requested. Stop interrupts only the agent started in this session. Wait for Agent exited before closing to confirm it stopped.") }
-                    Text("Terminal connections can pause when iOS puts AsterOS in the background.").foregroundStyle(.secondary)
+                    Text("AsterOS keeps this terminal when you leave the screen. With tmux installed, it reconnects to the same server session after a network interruption. Commands continue on Unraid until they finish or you stop them; server reboots end the session.").foregroundStyle(.secondary)
                 } }.navigationTitle("Terminal help").navigationBarTitleDisplayMode(.inline).toolbar { Button("Done") { showHelp = false } }
             }.presentationDetents([.medium, .large])
         }
@@ -331,9 +417,13 @@ struct ServerTerminalView: View {
         } message: { Text("Reconnect using the installed Desktop Commander. If no copy is available, AsterOS installs version 0.2.51 once in appdata. Your paired AI clients get the terminal user’s permissions. Node.js is required; npm is needed only for installation.") }
         .confirmationDialog("Close this terminal?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Stop first") { Task { await model.interrupt() } }
-            Button("Close without confirming stop", role: .destructive) { dismiss() }
-        } message: { Text("Closing or backgrounding a terminal does not confirm the agent stopped. Use Stop and wait for Agent exited to verify. Long-running remote support is not guaranteed when iOS suspends AsterOS.") }
-        .task { model.connect() }
-        .onDisappear { model.close() }
+            Button("Leave terminal running") { dismiss() }
+        } message: { Text("Leaving this screen retains the terminal. With tmux available, running commands continue on the server during a dropped connection. Use Stop if you want to stop the agent before leaving.") }
+        .task { await model.resume() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await model.resume() } }
+            else if phase == .background { model.pauseObservation() }
+        }
+        .onDisappear { model.pauseObservation() }
     }
 }

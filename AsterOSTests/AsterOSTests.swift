@@ -414,6 +414,35 @@ final class AsterOSTests: XCTestCase {
         XCTAssertTrue(command.contains("node \"$aster_dc_entry\" remote"))
         XCTAssertFalse(command.contains("pkill")); XCTAssertFalse(command.contains("nohup"))
     }
+    @MainActor func testTerminalModelIsRetainedPerServerUntilForgotten() {
+        let server = ServerProfile(id: UUID(), name: "Fixture", address: URL(string: "https://server.invalid")!, connection: .custom)
+        let first = TerminalSessions.model(for: server)
+        first.pauseObservation()
+        XCTAssertTrue(first === TerminalSessions.model(for: server))
+        TerminalSessions.forget(server.id)
+        XCTAssertFalse(first === TerminalSessions.model(for: server))
+        TerminalSessions.forget(server.id)
+    }
+    @MainActor func testPersistentTerminalAttachesOnceAndDoesNotReplayCommands() async throws {
+        let loaded = expectation(description: "Persistent terminal fixture")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero); web.navigationDelegate = delegate
+        web.loadHTMLString("<html><body>fixture</body></html>", baseURL: URL(string: "https://server.invalid/webterminal/ttyd/"))
+        await fulfillment(of: [loaded], timeout: 10)
+        _ = try await web.evaluateJavaScript(#"window.lines=['root@server:~# '];window.sent=[];window.asterTerminalSocket={readyState:1};window.term={input:v=>sent.push(v),onWriteParsed:f=>{window.parsed=f;return {dispose:()=>{}}},buffer:{active:{baseY:0,cursorY:0,get length(){return lines.length},getLine:i=>({translateToString:()=>lines[i],isWrapped:false})}}};"#)
+        let id = UUID()
+        let command = TerminalPolicy.attachCommand(sessionID: id)
+        let arguments: [String: Any] = ["command": command, "sessionName": "asteros-" + id.uuidString.lowercased()]
+        for _ in 0..<2 { _ = try await web.callAsyncJavaScript(TerminalBridge.attach, arguments: arguments, in: nil, contentWorld: .page) }
+        let count = try await web.evaluateJavaScript("sent.length") as? Int
+        XCTAssertEqual(count, 1)
+        _ = try await web.callAsyncJavaScript("lines=['ASTEROS_PERSIST_'+sessionName]; parsed();", arguments: arguments, in: nil, contentWorld: .page)
+        let state = try await web.callAsyncJavaScript(TerminalBridge.attach, arguments: arguments, in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(state, "persistent")
+        XCTAssertTrue(command.contains("has-session")); XCTAssertTrue(command.contains("attach-session"))
+        XCTAssertFalse(command.contains("desktop-commander")); XCTAssertFalse(command.contains("kill"))
+        web.navigationDelegate = nil
+    }
     @MainActor func testTerminalAppearanceFitsPhoneWithoutSendingCommands() async throws {
         let loaded = expectation(description: "Terminal appearance fixture")
         let delegate = CatalogFixtureLoader(loaded)
