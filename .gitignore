@@ -12,3 +12,10 @@ __pycache__/
 TestResults.xcresult/
 
 .build/
+
+# Local distribution artifacts and signing configuration
+.release/
+*.xcarchive/
+*.ipa
+*.xcresult/
+ExportOptions.local.plist

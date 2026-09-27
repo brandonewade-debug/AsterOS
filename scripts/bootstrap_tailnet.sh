@@ -29,4 +29,5 @@ if [ ! -d "$FRAMEWORK" ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$FINGERP
 fi
 mkdir -p "$ROOT/.build/frameworks"
 rsync -a --delete "$FRAMEWORK/" "$ROOT/.build/frameworks/TailscaleKit.xcframework/"
+python3 "$ROOT/scripts/prepare_framework_privacy.py"
 printf '%s\n' 'Embedded Tailscale dependencies ready.'
