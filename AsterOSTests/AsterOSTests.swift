@@ -3,6 +3,23 @@ import WebKit
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    @MainActor func testCatalogCacheAppearsBeforeNetworkButCannotInstall() throws {
+        let id = UUID(), server = URL(string: "https://cache-test.example:4443")!
+        defer { CatalogCache.forget(id) }
+        let app = CatalogApp(id: "repo|Example", name: "Example", author: "Author", category: "Media", summary: "Saved listing", icon: "", section: "Discover", note: "")
+        CatalogCache.save([app], serverID: id, address: CatalogPolicy.url(server: server))
+        let model = CatalogBrowserModel(server: server, serverID: id)
+        XCTAssertEqual(model.catalogItems, [app])
+        XCTAssertTrue(model.catalogReady)
+        XCTAssertFalse(model.catalogLive, "Cached metadata must never enable installation")
+        XCTAssertTrue(model.catalogRefreshing)
+        XCTAssertNil(model.webView.url, "Cache must be available before any network request")
+        XCTAssertNil(CatalogCache.load(serverID: UUID(), address: CatalogPolicy.url(server: server)))
+        XCTAssertNil(CatalogCache.load(serverID: id, address: URL(string: "https://other.example/Apps")!))
+        CatalogCache.forget(id)
+        XCTAssertNil(CatalogCache.load(serverID: id, address: CatalogPolicy.url(server: server)))
+    }
+
     @MainActor func testSessionOnlyLoginSurvivesFreshBrowserAndLogoutIsNotRestored() async throws {
         let id = UUID(), server = URL(string: "https://tower.example:4443")!
         defer { try? ServerWebSession.forget(id) }
@@ -23,6 +40,14 @@ final class AsterOSTests: XCTestCase {
         XCTAssertNil(restoredCookie.expiresDate, "Do not manufacture a longer cookie lifetime")
         XCTAssertTrue(restoredCookie.isHTTPOnly)
         await freshStore.httpCookieStore.delete(restoredCookie)
+        // WebKit can acknowledge delete before its network process publishes the change.
+        // Wait for the observed deletion before asserting the archive's logout behavior.
+        var remaining = await freshStore.httpCookieStore.allCookies()
+        for _ in 0..<100 where !remaining.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+            remaining = await freshStore.httpCookieStore.allCookies()
+        }
+        XCTAssertTrue(remaining.isEmpty, "WebKit must finish deleting the test cookie")
         await reopened.capture(); reopened.stopObserving()
         let lastStore = WKWebsiteDataStore.nonPersistent()
         let last = ServerWebSession(serverID: id, server: server, dataStore: lastStore)

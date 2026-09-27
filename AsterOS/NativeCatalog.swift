@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-struct CatalogApp: Decodable, Identifiable, Hashable {
+struct CatalogApp: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let author: String
@@ -10,6 +10,24 @@ struct CatalogApp: Decodable, Identifiable, Hashable {
     let icon: String
     let section: String
     let note: String
+}
+struct CatalogSnapshot: Codable {
+    let address: URL
+    let savedAt: Date
+    let items: [CatalogApp]
+}
+enum CatalogCache {
+    static func load(serverID: UUID, address: URL, defaults: UserDefaults = .standard) -> CatalogSnapshot? {
+        guard let data = defaults.data(forKey: "catalogSnapshot-" + serverID.uuidString), data.count < 4_000_000,
+              let saved = try? JSONDecoder().decode(CatalogSnapshot.self, from: data), saved.address == address else { return nil }
+        return saved
+    }
+    static func save(_ items: [CatalogApp], serverID: UUID, address: URL, defaults: UserDefaults = .standard) {
+        let snapshot = CatalogSnapshot(address: address, savedAt: Date(), items: Array(items.prefix(500)))
+        guard let data = try? JSONEncoder().encode(snapshot), data.count < 4_000_000 else { return }
+        defaults.set(data, forKey: "catalogSnapshot-" + serverID.uuidString)
+    }
+    static func forget(_ id: UUID) { UserDefaults.standard.removeObject(forKey: "catalogSnapshot-" + id.uuidString) }
 }
 struct NativeCatalogPage: Decodable {
     let items: [CatalogApp]
@@ -59,6 +77,11 @@ enum NativeCatalogBridge {
     if (!info) return false; info.click(); return true;
     """#
 }
+@MainActor enum CatalogImageCache {
+    static let images: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>(); cache.countLimit = 200; cache.totalCostLimit = 32 * 1024 * 1024; return cache
+    }()
+}
 struct CatalogArtwork: View {
     let app: CatalogApp
     @State private var image: UIImage?
@@ -69,6 +92,7 @@ struct CatalogArtwork: View {
         }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .task(id: app.icon) {
             guard let url = URL(string: app.icon), url.scheme == "https", url.user == nil, url.password == nil else { return }
+            if let cached = CatalogImageCache.images.object(forKey: url as NSURL) { image = cached; return }
             do {
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.timeoutIntervalForResource = 12
@@ -78,6 +102,7 @@ struct CatalogArtwork: View {
                 let (data, response) = try await session.data(from: url)
                 guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 5_000_000, !Task.isCancelled else { return }
                 image = UIImage(data: data)
+                if let image { CatalogImageCache.images.setObject(image, forKey: url as NSURL, cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count) }
             } catch { }
         }
     }
@@ -112,18 +137,20 @@ struct NativeAppStoreView: View {
                             }.padding(.vertical, 10)
                             HStack {
                                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                                TextField("Search Unraid apps", text: $query).submitLabel(.search).autocorrectionDisabled().textInputAutocapitalization(.never)
+                                TextField("Search Unraid apps", text: $query).disabled(!model.catalogLive).submitLabel(.search).autocorrectionDisabled().textInputAutocapitalization(.never)
                                     .onSubmit { category = "All"; Task { await model.searchCatalog(query) } }
-                                Button { category = "All"; Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy)
+                                Button { category = "All"; Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy || !model.catalogLive)
                             }.padding(16).asterGlass(radius: 28)
-                            if model.catalogBusy || model.loading { ProgressView("Loading catalog…").frame(maxWidth: .infinity) }
+                            if model.catalogBusy || model.loading || model.catalogRefreshing { ProgressView(model.catalogReady ? "Refreshing apps…" : "Loading apps from your server…").frame(maxWidth: .infinity) }
+                            if model.catalogReady && !model.catalogLive { Text("You can browse these listings while the live catalog refreshes.").font(.caption).foregroundStyle(.secondary) }
                             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
                             if model.needsCatalogLogin {
                                 ContentUnavailableView {
                                     Label("Connect to the catalog", systemImage: "person.crop.circle")
                                 } description: { Text("Sign in to load Community Applications. AsterOS remembers this server’s session until it expires or you sign out.") }
                                 Button("Sign in to server") { loginOnly = true; showServer = true }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                            } else if model.catalogReady {
+                            }
+                            if model.catalogReady {
                                 HStack {
                                     Text(query.isEmpty ? "Discover" : "Search results").font(.title2.bold())
                                     Spacer()
@@ -148,13 +175,14 @@ struct NativeAppStoreView: View {
                                     }
                                 }
                                 HStack {
-                                    Button("Previous") { category = "All"; Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy)
+                                    Button("Previous") { category = "All"; Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy || !model.catalogLive)
                                     Spacer()
-                                    Button("Next") { category = "All"; Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy)
+                                    Button("Next") { category = "All"; Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy || !model.catalogLive)
                                 }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                                 Text("Categories filter this page. Search queries your server’s catalog.").font(.caption2).foregroundStyle(.secondary)
-                            } else if !model.loading {
-                                Text("Waiting for Community Applications. If your server needs setup or uses an unsupported catalog version, open the server view.").font(.subheadline).foregroundStyle(.secondary)
+                            } else if !model.catalogRefreshing && !model.needsCatalogLogin && model.error != nil {
+                                Text("The live catalog is taking longer than expected. You can retry or check the server view.").font(.subheadline).foregroundStyle(.secondary)
+                                Button("Retry catalog") { model.openCatalog() }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                                 Button("Open server view") { loginOnly = false; showServer = true }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                             }
                         }.padding(24).frame(maxWidth: 760).frame(maxWidth: .infinity)
@@ -180,14 +208,15 @@ struct NativeAppStoreView: View {
                                 Button("Review installation in Unraid") {
                                     selected = nil; loginOnly = false; showServer = true
                                     Task { await model.reviewCatalogApp(app) }
-                                }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                                }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(!model.catalogLive || model.catalogBusy)
+                                if !model.catalogLive { Text("Installation becomes available when the live catalog is ready.").font(.caption).foregroundStyle(.secondary) }
                                 Text("Review compatibility notes, ports and storage paths in the server installer before applying. Nothing installs when you browse or open these details.").font(.caption).foregroundStyle(.secondary)
                             }.padding(24)
                         }.background { AsterBackdrop() }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                             .toolbar { Button("Done") { selected = nil } }
                     }
                 }
-                .onChange(of: model.catalogReady) { _, ready in if ready && loginOnly { showServer = false; loginOnly = false } }
+                .onChange(of: model.catalogLive) { _, ready in if ready && loginOnly { showServer = false; loginOnly = false } }
                 .onAppear { model.resumeCatalog() }
                 .onDisappear { model.stopCatalogObservation(); model.stop() }
         }

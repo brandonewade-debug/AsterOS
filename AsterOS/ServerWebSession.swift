@@ -10,6 +10,7 @@ import Security
     private let dataStore: WKWebsiteDataStore
     private var restored = false
     private var revision = 0
+    private var captureTask: Task<Void, Never>?
     var onError: ((String) -> Void)?
     init(serverID: UUID, server: URL, dataStore: WKWebsiteDataStore) {
         self.serverID = serverID; self.server = server; self.dataStore = dataStore
@@ -56,14 +57,27 @@ import Security
     }
     func capture() async {
         guard restored else { return }
-        revision += 1; let token = revision
-        let cookies = await dataStore.httpCookieStore.allCookies()
-        guard token == revision else { return }
-        do {
-            let relevant = cookies.filter { Self.accepts($0, server: server) }
-            if relevant.isEmpty { try Self.forget(serverID) }
-            else { try Self.write(try Self.encode(relevant, server: server), id: serverID) }
-        } catch { onError?("Your server session could not be saved securely. Unlock your device and retry.") }
+        revision += 1
+        if let pending = captureTask { await pending.value; return }
+        let pending = Task { [self] in
+            defer { captureTask = nil }
+            while restored && !Task.isCancelled {
+                let token = revision
+                let cookies = await dataStore.httpCookieStore.allCookies()
+                guard restored, !Task.isCancelled else { return }
+                // Cookie notifications can overlap an explicit save. Drain the latest
+                // snapshot before any caller returns, especially immediately after logout.
+                if token != revision { continue }
+                do {
+                    let relevant = cookies.filter { Self.accepts($0, server: server) }
+                    if relevant.isEmpty { try Self.forget(serverID) }
+                    else { try Self.write(try Self.encode(relevant, server: server), id: serverID) }
+                } catch { onError?("Your server session could not be saved securely. Unlock your device and retry.") }
+                return
+            }
+        }
+        captureTask = pending
+        await pending.value
     }
     private static func query(_ id: UUID) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
