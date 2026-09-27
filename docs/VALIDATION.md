@@ -152,3 +152,12 @@ Optional GraphQL requests for metrics, temperature sensors, CPU packages and sto
 The installed API has GPU inventory but no GPU utilization field. Native GPU cards therefore use the existing GPU Statistics plugin and the existing server web sign-in. AsterOS reads the dashboard's plugin configuration as JSON without executing its scripts, validates vendor/PCI/GPU identifiers, and requests only the server's fixed plugin endpoint. API keys are never sent there; only matching Unraid session cookies are used, HTTPS is required, and redirects are rejected. A missing plugin or expired login has an explanatory state and a retry backoff. No plugin, driver or companion is installed by this change.
 
 Read-only server inspection confirmed GPU Statistics and NVIDIA Driver are installed. Its cached output identifies Quadro P4000 and uses temperature strings such as 100F, which the decoder converts correctly. Regression fixtures cover this format, N/A values, VFIO, configuration validation, CPU sensor types, network selection, mixed BigInt encodings and capacity formatting. The phone-sized native layout was rendered and visually inspected using sample data. Actual saved-session GPU requests on the phone still require hands-on confirmation; no server credentials were extracted for development.
+
+## TestFlight preparation — 2026-09-27
+- Config/Version.json now controls generator output: 0.1.0 (2).
+- Added required-reason privacy manifests to app and both TailscaleKit slices before signing.
+- Simulator suite: 65 tests passed, zero failures.
+- Release archive succeeded; app version and both bundled manifests verified; strict deep codesign verification passed.
+- Upload attempted using Xcode account; export stopped with Error Downloading App Information. User confirmed a new App Store Connect app record is needed. No build has been uploaded yet.
+- Encryption exemption is intentionally unset pending the actual Apple questionnaire; no unsupported NO declaration.
+- Added reproducible archive/upload helper, beta test notes, and documented remaining privacy/review gates.
