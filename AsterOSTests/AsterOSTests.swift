@@ -126,6 +126,50 @@ final class AsterOSTests: XCTestCase {
         XCTAssertEqual(reloaded.layout.folders.count, 1)
     }
 
+    @MainActor func testFoldersRecoverAfterServerReAddedAndSurviveRestart() throws {
+        let suite = "AsterOS-folder-recovery-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let oldID = UUID(), newID = UUID(), thirdID = UUID()
+        let address = URL(string: "https://tower.example:443")!
+        let old = AppFoldersStore(defaults: defaults)
+        old.load(serverID: oldID)
+        let media = try XCTUnwrap(old.create("Media Management", app: "container:plex"))
+        let recovered = AppFoldersStore(defaults: defaults)
+        recovered.load(serverID: newID, address: address, knownServerIDs: [newID])
+        XCTAssertEqual(recovered.folder(for: "container:plex"), media)
+        recovered.rename(media, name: "Media")
+        let restarted = AppFoldersStore(defaults: UserDefaults(suiteName: suite)!)
+        restarted.load(serverID: thirdID, address: URL(string: "https://TOWER.example/graphql")!, knownServerIDs: [thirdID])
+        XCTAssertEqual(restarted.layout.folders.first?.name, "Media")
+        XCTAssertEqual(restarted.folder(for: "container:plex"), media)
+        XCTAssertNotNil(defaults.data(forKey: "appFolders-" + oldID.uuidString))
+        restarted.remove(media)
+        restarted.load(serverID: thirdID, address: address, knownServerIDs: [thirdID])
+        XCTAssertTrue(restarted.layout.folders.isEmpty, "Do not restore folders the user deliberately deleted")
+    }
+
+    @MainActor func testFolderRecoveryDoesNotGuessOrOverwriteCorruptData() throws {
+        let suite = "AsterOS-folder-isolation-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let a = UUID(), b = UUID(), c = UUID()
+        let store = AppFoldersStore(defaults: defaults)
+        store.load(serverID: a); store.create("First")
+        store.load(serverID: b); store.create("Second")
+        let address = URL(string: "https://other.example")!
+        store.load(serverID: c, address: address, knownServerIDs: [c])
+        XCTAssertTrue(store.layout.folders.isEmpty)
+        store.load(serverID: c, address: address, knownServerIDs: [a, c])
+        XCTAssertTrue(store.layout.folders.isEmpty)
+        let corrupt = Data("invalid layout".utf8)
+        defaults.set(corrupt, forKey: AppFoldersStore.addressKey(address))
+        store.load(serverID: c, address: address, knownServerIDs: [c])
+        XCTAssertNotNil(store.error)
+        XCTAssertNil(store.create("Must not overwrite"))
+        XCTAssertEqual(defaults.data(forKey: AppFoldersStore.addressKey(address)), corrupt)
+    }
+
     func testRemovalUsesIDVariableAndPreservesDockerImage() throws {
         XCTAssertTrue(UnraidClient.removeContainerMutation.contains("removeContainer(id: $id, withImage: false)"))
         let success = try JSONDecoder().decode(ContainerRemovalData.self, from: Data(#"{"docker":{"removeContainer":true}}"#.utf8))

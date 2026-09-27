@@ -19,18 +19,51 @@ struct AppFolderLayout: Codable {
     @Published private(set) var layout = AppFolderLayout()
     @Published var error: String?
     private var key: String?
+    private var profileKey: String?
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
-    func load(serverID: UUID?) {
-        key = serverID.map { "appFolders-" + $0.uuidString }; error = nil; layout = AppFolderLayout()
-        guard let key, let data = defaults.data(forKey: key) else { return }
-        do { layout = try JSONDecoder().decode(AppFolderLayout.self, from: data) }
-        catch { self.key = nil; self.error = "Saved app folders could not be loaded. Your saved arrangement has not been changed." }
+    // A profile UUID changes when a connection is re-added; its server address does not.
+    static func addressKey(_ address: URL) -> String {
+        var components = URLComponents(url: CatalogPolicy.url(server: address), resolvingAgainstBaseURL: false)!
+        components.host = components.host?.lowercased()
+        components.scheme = components.scheme?.lowercased()
+        if components.port == 443 { components.port = nil }
+        return "appFolderAddress-" + components.string!
+    }
+    func load(serverID: UUID?, address: URL? = nil, knownServerIDs: [UUID] = []) {
+        profileKey = serverID.map { "appFolders-" + $0.uuidString }
+        key = serverID == nil ? nil : address.map(Self.addressKey) ?? profileKey
+        error = nil; layout = AppFolderLayout()
+        guard let key else { return }
+        var data = defaults.data(forKey: key)
+        if data == nil, let profileKey { data = defaults.data(forKey: profileKey) }
+        // Recover the unambiguous legacy case: one saved server and one abandoned
+        // layout. Never guess between several servers/layouts or replace saved data.
+        if data == nil, let serverID, knownServerIDs == [serverID] {
+            let activeKeys = Set(knownServerIDs.map { "appFolders-" + $0.uuidString })
+            let abandoned = defaults.dictionaryRepresentation().keys.filter {
+                $0.hasPrefix("appFolders-") && !activeKeys.contains($0)
+            }
+            if abandoned.count == 1 { data = defaults.data(forKey: abandoned[0]) }
+        }
+        guard let data else { return }
+        do {
+            layout = try JSONDecoder().decode(AppFolderLayout.self, from: data)
+            // Keep the original bytes as a recovery copy; future edits use both keys.
+            defaults.set(data, forKey: key)
+            if let profileKey { defaults.set(data, forKey: profileKey) }
+        } catch {
+            self.key = nil; self.profileKey = nil
+            self.error = "Saved app folders could not be loaded. Your saved arrangement has not been changed."
+        }
     }
     private func persist() {
         guard let key else { return }
-        do { defaults.set(try JSONEncoder().encode(layout), forKey: key) }
-        catch { self.error = "Unable to save app folders." }
+        do {
+            let data = try JSONEncoder().encode(layout)
+            defaults.set(data, forKey: key)
+            if let profileKey { defaults.set(data, forKey: profileKey) }
+        } catch { self.error = "Unable to save app folders." }
     }
     @discardableResult func create(_ name: String, app: String? = nil) -> UUID? {
         guard key != nil else { return nil }
@@ -231,7 +264,7 @@ struct AppsView: View {
                 NativeAppStoreView(server: presentation.server, model: presentation.model)
             }
             .task(id: store.selectedID) {
-                openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID)
+                openedFolder = nil; folders.load(serverID: store.demo ? nil : store.selectedID, address: store.selected?.address, knownServerIDs: store.profiles.map(\.id))
                 if catalogServerID != store.selectedID || store.demo {
                     catalogPresentation = nil; catalogModel?.stopCatalogObservation(); catalogModel?.stop(); catalogModel = nil; catalogServerID = nil
                 }
