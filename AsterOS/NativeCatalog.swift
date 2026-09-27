@@ -142,6 +142,7 @@ struct NativeAppStoreView: View {
     @State private var showServer = false
     @State private var loginOnly = false
     @State private var discardEditor = false
+    @State private var categoryPicker: CatalogCategorySelection?
     private var visible: [CatalogApp] { model.catalogItems }
     var body: some View {
         NavigationStack {
@@ -185,11 +186,8 @@ struct NativeAppStoreView: View {
                                     Text(model.catalogCategory?.name ?? (query.isEmpty ? "Discover" : "Search results")).font(.title2.bold())
                                     Spacer()
                                     if !model.catalogCategories.isEmpty {
-                                        Menu {
-                                            Button("Discover") { query = ""; model.openCatalog() }
-                                            ForEach(model.catalogCategories) { value in
-                                                Button(value.name) { query = ""; Task { await model.selectCatalogCategory(value) } }
-                                            }
+                                        Button {
+                                            categoryPicker = CatalogCategorySelection(categories: model.catalogCategories, selectedID: model.catalogCategory?.id)
                                         } label: { Label("Category", systemImage: "line.3.horizontal.decrease") }
                                         .font(.caption).disabled(model.catalogBusy || !model.catalogLive)
                                     }
@@ -235,6 +233,13 @@ struct NativeAppStoreView: View {
                 }
                 .interactiveDismissDisabled(model.applyingConfiguration || model.nativeEditor != nil)
                 .confirmationDialog("Discard unapplied changes?", isPresented: $discardEditor, titleVisibility: .visible) { Button("Discard changes", role: .destructive) { showServer = false; loginOnly = false; model.openCatalog() } }
+                .sheet(item: $categoryPicker) { selection in
+                    CatalogCategoryPicker(selection: selection) { category in
+                        categoryPicker = nil; query = ""
+                        if let category { Task { await model.selectCatalogCategory(category) } }
+                        else { model.openCatalog() }
+                    }
+                }
                 .sheet(item: $selected) { app in
                     NavigationStack {
                         ScrollView {
@@ -258,5 +263,54 @@ struct NativeAppStoreView: View {
                 .onAppear { model.resumeCatalog() }
                 .onDisappear { model.stopCatalogObservation(); model.stop() }
         }
+    }
+}
+
+
+// Capture the menu once when opening it. Live catalog polling must not rebuild
+// a long category list while the user is scrolling.
+struct CatalogCategorySelection: Identifiable {
+    let id = UUID()
+    let categories: [CatalogCategory]
+    let selectedID: String?
+}
+struct CatalogCategoryPicker: View {
+    let selection: CatalogCategorySelection
+    let choose: (CatalogCategory?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    private var categories: [CatalogCategory] {
+        selection.categories.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                if search.isEmpty {
+                    Button { choose(nil) } label: {
+                        HStack {
+                            Text("Discover")
+                            Spacer()
+                            if selection.selectedID == nil { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+                ForEach(categories) { category in
+                    Button { choose(category) } label: {
+                        HStack {
+                            Text(category.name).foregroundStyle(.primary)
+                            Spacer()
+                            if selection.selectedID == category.id { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background { AsterBackdrop() }
+            .searchable(text: $search, prompt: "Find a category")
+            .navigationTitle("Categories")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+        .tint(.mint)
     }
 }

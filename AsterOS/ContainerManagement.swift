@@ -321,22 +321,27 @@ struct CatalogDialog {
                   let bytes = json.data(using: .utf8), bytes.count < 4_000_000 else { return }
             let page = try JSONDecoder().decode(NativeCatalogPage.self, from: bytes)
             guard !Task.isCancelled, onCatalog else { return }
-            catalogCategories = page.categories
-            catalogBusy = page.busy
+            if catalogCategories != page.categories { catalogCategories = page.categories }
+            if catalogBusy != page.busy { catalogBusy = page.busy }
             if page.ready {
                 // Show cards as they arrive; installation stays gated until CA finishes.
                 let changed = catalogItems != page.items
                 if changed { catalogItems = page.items }
-                catalogReady = true; needsCatalogLogin = false
-                catalogLive = !page.busy; catalogRefreshing = page.busy
+                if !catalogReady { catalogReady = true }
+                if needsCatalogLogin { needsCatalogLogin = false }
+                if catalogLive != !page.busy { catalogLive = !page.busy }
+                if catalogRefreshing != page.busy { catalogRefreshing = page.busy }
                 if !page.busy {
-                    loading = false; timeout?.cancel(); catalogDeadline?.cancel(); error = nil
+                    if loading { loading = false }
+                    timeout?.cancel(); catalogDeadline?.cancel()
+                    if error != nil { error = nil }
                     if cacheable && lastCachedItems != page.items {
                         CatalogCache.save(page.items, serverID: serverID, address: catalog)
                         lastCachedItems = page.items
                     }
                 }
-                catalogNext = page.next; catalogPrevious = page.previous
+                if catalogNext != page.next { catalogNext = page.next }
+                if catalogPrevious != page.previous { catalogPrevious = page.previous }
             }
         } catch { /* Server view remains available if the plugin markup has changed. */ }
     }
