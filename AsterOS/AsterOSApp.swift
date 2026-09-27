@@ -2,8 +2,10 @@ import SwiftUI
 
 @main struct AsterOSApp: App {
     @StateObject private var store = AppStore()
+    @StateObject private var lock = AppLockStore()
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vpn = TailnetStore.shared
-    var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).tint(.mint) } }
+    var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).environmentObject(lock).tint(.mint).opacity(lock.locked || lock.shield ? 0 : 1).accessibilityHidden(lock.locked || lock.shield).background(AppSecurityWindow(lock: lock)).onChange(of: scenePhase, initial: true) { _, phase in lock.sceneChanged(phase) } } }
 }
 enum DockTheme {
     static let background = Color(red: 0.055, green: 0.065, blue: 0.08)
@@ -316,13 +318,20 @@ struct SettingsView: View {
                     Button("Explore demo") { store.showDemo() }
                     if store.selected != nil { Button("Remove selected server", role: .destructive) { removing = true } }
                 }
+                Section("Security") { NavigationLink { AppSecuritySettings() } label: { Label("App security", systemImage: "lock.shield") } }
                 Section("Remote access") {
                     NavigationLink { TailnetSetupView() } label: { Label("Private connection", systemImage: "network.badge.shield.half.filled") }
+                }
+                if let server = store.selected, !store.demo {
+                    Section("Server tools") {
+                        NavigationLink { ServerTerminalView(server: server) } label: { Label("Terminal", systemImage: "terminal") }
+                        NavigationLink { ServerTerminalView(server: server, commander: true) } label: { Label("Desktop Commander", systemImage: "desktopcomputer") }
+                    }
                 }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
                     Text("0.1.0 • Preview")
-                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes an integrated server App Store and container removal. Notifications, Face ID lock and terminal access are still planned.").foregroundStyle(.secondary)
+                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes an integrated server App Store and container removal. Includes server terminal access. Optional PIN and biometric app lock are available. Notifications are still planned.").foregroundStyle(.secondary)
                 }
                 Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. App browser cookies are kept only for the current browser session.") }
                 if let error { Text(error).foregroundStyle(.orange) }

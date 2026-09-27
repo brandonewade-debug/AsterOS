@@ -7,5 +7,7 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to unlock AsterOS when you enable app security.</string>
 </dict>
 </plist>

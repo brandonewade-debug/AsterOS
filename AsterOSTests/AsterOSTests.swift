@@ -320,6 +320,124 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: false))
     }
 
+    func testPINValidationAndDerivation() throws {
+        XCTAssertTrue(PINProtection.valid("012345"))
+        for invalid in ["12345", "1234567", "１２３４５６", "12345a"] { XCTAssertFalse(PINProtection.valid(invalid)) }
+        let salt = Data(repeating: 42, count: 32)
+        let hash = try PINProtection.derive("012345", salt: salt)
+        XCTAssertEqual(hash.count, 32)
+        XCTAssertTrue(PINProtection.matches(hash, try PINProtection.derive("012345", salt: salt)))
+        XCTAssertFalse(PINProtection.matches(hash, try PINProtection.derive("012346", salt: salt)))
+        XCTAssertNotEqual(hash, try PINProtection.derive("012345", salt: Data(repeating: 43, count: 32)))
+    }
+    @MainActor func testAppLockPersistsAndRateLimitsAcrossRestart() throws {
+        var saved: Data?
+        let storage = AppLockStorage(read: { saved }, write: { saved = $0 }, remove: { saved = nil })
+        let lock = AppLockStore(storage: storage)
+        XCTAssertFalse(lock.enabled); XCTAssertFalse(lock.locked)
+        try lock.setPIN("012345", oldPIN: nil)
+        XCTAssertNotNil(saved); XCTAssertFalse(String(data: saved!, encoding: .utf8)!.contains("012345"))
+        let restarted = AppLockStore(storage: storage)
+        XCTAssertTrue(restarted.locked)
+        let now = Date()
+        for _ in 0..<5 { XCTAssertFalse(try restarted.verifyPIN("999999", now: now)) }
+        let again = AppLockStore(storage: storage)
+        XCTAssertFalse(try again.verifyPIN("012345", now: now.addingTimeInterval(1)))
+        XCTAssertEqual(again.record?.failures, 5)
+        XCTAssertTrue(try again.verifyPIN("012345", now: now.addingTimeInterval(31)))
+        again.unlockPIN("012345")
+        XCTAssertFalse(again.locked)
+        again.sceneChanged(.inactive); XCTAssertTrue(again.shield); XCTAssertFalse(again.locked)
+        again.sceneChanged(.background); XCTAssertTrue(again.locked)
+        again.sceneChanged(.active); XCTAssertFalse(again.shield); XCTAssertTrue(again.locked)
+    }
+    @MainActor func testAppLockChangesRequireCurrentPINAndCanBeDisabled() throws {
+        var saved: Data?
+        let storage = AppLockStorage(read: { saved }, write: { saved = $0 }, remove: { saved = nil })
+        let lock = AppLockStore(storage: storage)
+        try lock.setPIN("123456", oldPIN: nil)
+        XCTAssertThrowsError(try lock.setPIN("654321", oldPIN: "000000"))
+        XCTAssertThrowsError(try lock.disable(pin: "000000"))
+        try lock.setPIN("654321", oldPIN: "123456")
+        lock.lock(); lock.unlockPIN("123456"); XCTAssertTrue(lock.locked)
+        lock.unlockPIN("654321"); XCTAssertFalse(lock.locked)
+        try lock.disable(pin: "654321")
+        XCTAssertNil(saved); XCTAssertFalse(lock.enabled)
+        let restarted = AppLockStore(storage: storage)
+        XCTAssertFalse(restarted.locked)
+    }
+    @MainActor func testAppLockFailsClosedOnStorageErrors() throws {
+        let bad = AppLockStore(storage: AppLockStorage(read: { throw AppError.message("Unavailable") }, write: { _ in }, remove: {}))
+        XCTAssertTrue(bad.locked); XCTAssertTrue(bad.enabled); XCTAssertTrue(bad.storageFailed)
+        bad.unlockPIN("123456"); XCTAssertTrue(bad.locked)
+        XCTAssertThrowsError(try bad.setPIN("123456", oldPIN: nil))
+        let corrupt = AppLockStore(storage: AppLockStorage(read: { Data("invalid".utf8) }, write: { _ in }, remove: {}))
+        XCTAssertTrue(corrupt.locked)
+        var saved: Data?
+        var failWrites = false
+        let lock = AppLockStore(storage: AppLockStorage(read: { saved }, write: { if failWrites { throw AppError.message("Unavailable") }; saved = $0 }, remove: {}))
+        try lock.setPIN("123456", oldPIN: nil); lock.lock(); failWrites = true
+        lock.unlockPIN("123456"); XCTAssertTrue(lock.locked)
+    }
+    @MainActor func testSecurityCoverUsesSeparateWindowAbovePresentedContent() throws {
+        var saved: Data?
+        let lock = AppLockStore(storage: AppLockStorage(read: { saved }, write: { saved = $0 }, remove: { saved = nil }))
+        try lock.setPIN("123456", oldPIN: nil)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let old = scene.windows.first { $0.isKeyWindow }
+        let host = UIWindow(windowScene: scene)
+        let controller = UIViewController(); host.rootViewController = controller; host.makeKeyAndVisible()
+        let coordinator = AppSecurityWindow.Coordinator()
+        lock.lock(); coordinator.update(view: controller.view, lock: lock)
+        XCTAssertNotNil(coordinator.cover)
+        XCTAssertTrue(coordinator.cover?.isKeyWindow == true)
+        XCTAssertGreaterThan(coordinator.cover!.windowLevel.rawValue, UIWindow.Level.alert.rawValue)
+        lock.unlockPIN("123456"); coordinator.update(view: controller.view, lock: lock)
+        XCTAssertNil(coordinator.cover)
+        XCTAssertTrue(host.isKeyWindow)
+        lock.sceneChanged(.inactive); coordinator.update(view: controller.view, lock: lock)
+        XCTAssertNotNil(coordinator.cover)
+        coordinator.clear(); host.isHidden = true; old?.makeKey()
+    }
+    func testTerminalOriginAndCommanderCommandPolicy() {
+        let server = URL(string: "https://server.example:4443/base/graphql")!
+        XCTAssertEqual(TerminalPolicy.terminal(server).absoluteString, "https://server.example:4443/base/webterminal/ttyd/")
+        XCTAssertTrue(TerminalPolicy.allows(URL(string: "https://server.example:4443/Dashboard")!, server: server))
+        for url in ["http://server.example:4443/", "https://server.example/", "https://other.example:4443/", "https://user:password@server.example:4443/"] {
+            XCTAssertFalse(TerminalPolicy.allows(URL(string: url)!, server: server))
+        }
+        XCTAssertNil(TerminalPolicy.commanderCommand(nonce: "'; touch /tmp/no; #"))
+        let command = TerminalPolicy.commanderCommand(nonce: UUID().uuidString)!
+        XCTAssertTrue(command.contains("@wonderwhy-er/desktop-commander@0.2.51 remote"))
+        XCTAssertFalse(command.contains("pkill")); XCTAssertFalse(command.contains("nohup"))
+    }
+    @MainActor func testTerminalBridgeRequiresLiveShellAndTracksOnlyItsAgent() async throws {
+        let loaded = expectation(description: "Terminal fixture")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero); web.navigationDelegate = delegate
+        web.loadHTMLString("<html><body>terminal fixture</body></html>", baseURL: URL(string: "https://server.invalid/webterminal/ttyd/"))
+        await fulfillment(of: [loaded], timeout: 10)
+        _ = try await web.evaluateJavaScript(#"window.lines=['root@server:~# '];window.sent=[];window.asterTerminalSocket={readyState:1};window.term={input:(value)=>sent.push(value),buffer:{active:{baseY:0,cursorY:0,get length(){return lines.length},getLine:i=>({translateToString:()=>lines[i],isWrapped:false})}}};"#)
+        let nonce = UUID().uuidString
+        let command = TerminalPolicy.commanderCommand(nonce: nonce)!
+        let started = try await web.callAsyncJavaScript(TerminalBridge.start, arguments: ["nonce": nonce, "command": command], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(started, true)
+        let sent = try await web.evaluateJavaScript("window.sent[0]") as? String
+        XCTAssertEqual(sent, command + "\r")
+        _ = try await web.callAsyncJavaScript("window.lines=['ASTEROS_DC_BEGIN_'+nonce,'Device ready'];", arguments: ["nonce": nonce], in: nil, contentWorld: .page)
+        let running = try await web.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertTrue(running?.contains("running") == true)
+        _ = try await web.callAsyncJavaScript(TerminalBridge.interrupt, arguments: [:], in: nil, contentWorld: .page)
+        let interrupt = try await web.evaluateJavaScript("window.sent[1]") as? String
+        XCTAssertEqual(interrupt, "\u{3}")
+        _ = try await web.callAsyncJavaScript("window.lines.push('ASTEROS_DC_END_'+nonce);", arguments: ["nonce": nonce], in: nil, contentWorld: .page)
+        let stopped = try await web.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertTrue(stopped?.contains("stopped") == true)
+        _ = try await web.evaluateJavaScript("window.asterTerminalSocket.readyState=3")
+        let denied = try await web.callAsyncJavaScript(TerminalBridge.start, arguments: ["nonce": nonce, "command": command], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(denied, false)
+        web.navigationDelegate = nil
+    }
     @MainActor func testNativeEditorDraftValidationAndSecretIsolation() async throws {
         let loaded = expectation(description: "Native editor fixture")
         let delegate = CatalogFixtureLoader(loaded)
