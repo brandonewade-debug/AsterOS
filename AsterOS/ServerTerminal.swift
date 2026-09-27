@@ -16,7 +16,7 @@ enum TerminalPolicy {
     static func commanderCommand(nonce: String) -> String? {
         guard UUID(uuidString: nonce) != nil else { return nil }
         // Foreground process, scoped to this terminal. Never kill other agents or install a boot service.
-        let script = #"trap 'printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; printf "\nASTEROS_DC_BEGIN_\#(nonce)\n"; if ! command -v node >/dev/null 2>&1; then printf "Node.js is required on this server.\n"; exit 127; fi; aster_dc_dir=/mnt/user/appdata/asteros/desktop-commander; aster_dc_entry="$aster_dc_dir/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"; if [ -f "$aster_dc_dir/.installed-0.2.51" ] && [ -f "$aster_dc_entry" ]; then printf "Reconnecting with installed Desktop Commander.\n"; node "$aster_dc_entry" remote; elif command -v desktop-commander >/dev/null 2>&1; then printf "Reconnecting with existing Desktop Commander.\n"; desktop-commander remote; else if [ ! -d /mnt/user/appdata ]; then printf "The appdata share must be available before installing Desktop Commander.\n"; exit 1; fi; if ! command -v npm >/dev/null 2>&1; then printf "npm is required for the one-time installation.\n"; exit 127; fi; mkdir -p "$aster_dc_dir" || exit 1; if ! mkdir "$aster_dc_dir/.installing" 2>/dev/null; then printf "Another installation is running, or a previous installation was interrupted. Check the installation before retrying.\n"; exit 1; fi; trap 'rmdir "$aster_dc_dir/.installing" 2>/dev/null; printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; printf "Installing Desktop Commander once in appdata…\n"; npm install --prefix "$aster_dc_dir" --no-audit --no-fund --save-exact @wonderwhy-er/desktop-commander@0.2.51 && [ -f "$aster_dc_entry" ] || exit 1; touch "$aster_dc_dir/.installed-0.2.51" || exit 1; rmdir "$aster_dc_dir/.installing" || exit 1; printf "Installation saved. Connecting Desktop Commander.\n"; node "$aster_dc_entry" remote; fi"#
+        let script = #"trap 'printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; printf "\nASTEROS_DC_BEGIN_\#(nonce)\n"; if ! command -v node >/dev/null 2>&1; then printf "Node.js is required on this server.\n"; exit 127; fi; aster_dc_dir=/mnt/user/appdata/asteros/desktop-commander; aster_dc_entry="$aster_dc_dir/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"; aster_dc_run() { node --input-type=module -e 'import {pathToFileURL} from "node:url"; const entry=process.argv[1]; process.argv=[process.execPath,entry,"remote"]; console.log("Loading Desktop Commander with Node "+process.version); const timer=setTimeout(()=>console.error("Desktop Commander is still loading its installed package. Check server storage and Node.js; Stop interrupts this attempt."),20000); timer.unref(); try {await import(pathToFileURL(entry).href);} catch(error) {console.error("Desktop Commander could not load:",error.message); process.exitCode=1;} finally {clearTimeout(timer);}' "$aster_dc_entry"; }; if [ -f "$aster_dc_dir/.installed-0.2.51" ] && [ -f "$aster_dc_entry" ]; then printf "Reconnecting with installed Desktop Commander.\n"; aster_dc_run; elif command -v desktop-commander >/dev/null 2>&1; then printf "Reconnecting with existing Desktop Commander.\n"; desktop-commander remote; else if [ ! -d /mnt/user/appdata ]; then printf "The appdata share must be available before installing Desktop Commander.\n"; exit 1; fi; if ! command -v npm >/dev/null 2>&1; then printf "npm is required for the one-time installation.\n"; exit 127; fi; mkdir -p "$aster_dc_dir" || exit 1; if ! mkdir "$aster_dc_dir/.installing" 2>/dev/null; then printf "Another installation is running, or a previous installation was interrupted. Check the installation before retrying.\n"; exit 1; fi; trap 'rmdir "$aster_dc_dir/.installing" 2>/dev/null; printf "\nASTEROS_DC_END_\#(nonce)\n"' EXIT; printf "Installing Desktop Commander once in appdata…\n"; npm install --prefix "$aster_dc_dir" --no-audit --no-fund --save-exact @wonderwhy-er/desktop-commander@0.2.51 && [ -f "$aster_dc_entry" ] || exit 1; touch "$aster_dc_dir/.installed-0.2.51" || exit 1; rmdir "$aster_dc_dir/.installing" || exit 1; printf "Installation saved. Connecting Desktop Commander.\n"; aster_dc_run; fi"#
         return "bash -c '" + script.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 }
@@ -121,9 +121,13 @@ enum TerminalBridge {
         logical += row?.translateToString(false) || '';
       }
       if (logical) lines.push(logical.trim());
+      let inInvocation = false;
       for (const line of lines) {
-        if (line === 'ASTEROS_DC_BEGIN_' + session.nonce && session.state === 'requested') session.state = 'starting';
-        if (session.state === 'starting' && /device ready/i.test(line)) session.state = 'running';
+        if (line === 'ASTEROS_DC_BEGIN_' + session.nonce) {
+          inInvocation = true;
+          if (session.state === 'requested') session.state = 'starting';
+        }
+        if (inInvocation && session.state === 'starting' && /device ready/i.test(line)) session.state = 'running';
         if (line === 'ASTEROS_DC_END_' + session.nonce) session.state = 'stopped';
       }
     }
@@ -146,6 +150,8 @@ enum TerminalBridge {
     @Published private(set) var persistence = "waiting"
     private var resuming = false
     private var commanderNonce: String?
+    private var commanderStartedAt: Date?
+    @Published private(set) var commanderStartupDelayed = false
     @Published private(set) var ready = false
     @Published private(set) var signingIn = false
     @Published private(set) var terminalVisible = false
@@ -172,7 +178,7 @@ enum TerminalBridge {
     var statusText: String {
         switch commanderState {
         case "requested": return "Start requested"
-        case "starting": return "Starting · check terminal for pairing"
+        case "starting": return commanderStartupDelayed ? "Startup delayed · check terminal output" : "Starting · check terminal for pairing"
         case "running": return "Device ready"
         case "stopping": return "Stop requested · waiting for exit"
         case "stopped": return "Agent exited"
@@ -238,6 +244,7 @@ enum TerminalBridge {
     }
     private func readStatus() async {
         guard onTerminal else { return }
+        commanderStartupDelayed = ["requested", "starting"].contains(commanderState) && (commanderStartedAt.map { Date().timeIntervalSince($0) >= 30 } ?? false)
         do {
             await styleTerminal()
             let raw = try await webView.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
@@ -261,7 +268,7 @@ enum TerminalBridge {
         guard let command = TerminalPolicy.commanderCommand(nonce: nonce) else { return }
         do {
             let sent = try await webView.callAsyncJavaScript(TerminalBridge.start, arguments: ["nonce": nonce, "command": command], in: nil, contentWorld: .page) as? Bool
-            if sent == true { commanderNonce = nonce; commanderState = "requested"; error = nil }
+            if sent == true { commanderNonce = nonce; commanderStartedAt = Date(); commanderStartupDelayed = false; commanderState = "requested"; error = nil }
             else { error = "Wait for the server shell prompt before starting Desktop Commander. This terminal version may not support the shortcut." }
         } catch { commanderState = "unknown"; self.error = "Could not confirm whether the command was sent. Check the terminal before retrying." }
     }
