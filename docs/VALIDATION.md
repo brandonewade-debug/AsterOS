@@ -167,3 +167,8 @@ Read-only server inspection confirmed GPU Statistics and NVIDIA Driver are insta
 - Xcode confirmed Uploaded package is processing, Upload succeeded, and EXPORT SUCCEEDED.
 - Non-blocking warning: TailscaleKit framework dSYM missing from archive. App dSYM is present; framework symbol packaging still needs correction.
 - Apple processing completion, export-compliance answers, beta metadata, group assignment, and external Beta App Review are not yet verified. Browser access remains at Apple sign-in; no App Store Connect API credentials were configured.
+
+
+## Review demo and connection progress — September 27, 2026
+70 simulator tests passed, including new cancellation, saved-server preservation, demo isolation, fixture consistency and phone-screen rendering coverage. Inspected rendered Photos, Apps and install-editor screens. Demo data is local/in-memory; no client is created for demo refresh or container actions. Existing mutation failure and backup verification tests remain passing.
+App Store Connect beta description/contact and store description, promotional text, keywords, subtitle and Utilities category were saved. Review instructions describe simulated functionality honestly; public support/privacy URLs, privacy disclosures and final review requirements remain separate release gates.

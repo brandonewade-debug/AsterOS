@@ -255,7 +255,8 @@ struct StorageDots: View {
                 .toolbar { Button("Refresh", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(store.loading || telemetry.loading || store.selected == nil || store.demo) }
                 .refreshable { await refresh() }
                 .sheet(isPresented: $setup) { ConnectionView() }
-                .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)-\(vpn.running)") {
+                .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)-\(vpn.running)-\(store.demo)") {
+                    if store.demo { telemetry.loadDemo(); return }
                     guard scenePhase == .active, let server = store.selected, !store.demo else { return }
                     if TailnetPolicy.contains(server.address.host ?? ""), !vpn.running { return }
                     selectedNetwork = UserDefaults.standard.string(forKey: networkKey) ?? ""
@@ -264,7 +265,7 @@ struct StorageDots: View {
                         do { try await Task.sleep(for: .seconds(5)) } catch { break }
                     }
                 }
-                .onChange(of: store.selectedID) { _, _ in telemetry.reset(store.selected) }
+                .onChange(of: store.selectedID) { _, _ in if store.demo { telemetry.loadDemo() } else { telemetry.reset(store.selected) } }
         }
     }
 }

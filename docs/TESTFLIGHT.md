@@ -28,7 +28,7 @@ An external TestFlight release requires completed beta contact/review metadata, 
 ## Known beta limitations
 Photo backup is explicit-start and foreground-only. Server alerts are in-app, not background push.
 GPU telemetry is hardware/plugin-dependent; missing data should be shown as unavailable.
-The dashboard demo alone does not provide a complete review path through files, photo backup, and installation.
+Build 3 adds offline demo navigation for dashboard, sample files, simulated backup, and sample container configuration. It does not perform real transfers, authentication, terminal sessions, or container operations. Apple may still request a dedicated review server.
 Preferences export excludes credentials, Tailscale identity, custom icon images, and server-side backup receipts.
 Do not uninstall the development build as an update step; an uninstall removes local settings/files.
 Use disposable data and containers when testing destructive actions.
@@ -45,3 +45,17 @@ https://developer.apple.com/app-store/review/guidelines/
 
 ## First uploaded build
 0.1.0 (2) uploaded September 27, 2026 at 08:46 America/Chicago. Xcode confirmed processing began. This is not confirmation of testing availability or Beta App Review approval. Complete encryption compliance, beta metadata, and group assignment in App Store Connect. The uploader reported missing TailscaleKit debug symbols; correct framework dSYM packaging for future builds.
+
+
+## Build 3 review walkthrough
+On first launch, scroll down in Connect your server and tap Explore demo. No account, server, VPN configuration, or Photos permission is needed for the demo. Existing users can enter it from Settings > Explore demo.
+- Server: sample CPU, RAM, temperature, network, GPU and storage cards.
+- Files: Documents has sample text previews; Photos and Videos contain 2026 > 09 with date-ordered sample media.
+- Photos: select a sample destination, toggle day folders and separate videos, start/pause/resume/reset the six-item simulated backup.
+- Apps: Discover contains four fictional samples. Install Notes, edit its port/path/time zone and advanced network/privileged choices, change its symbol, save, inspect sample logs, or remove it.
+- Touch and hold an app to move it into Favorites; Reorder apps changes the sample order.
+- Exit demo returns to the prior server without overwriting its saved selection. Sample changes are in memory and reset on a new demo session.
+
+The demo is clearly labeled for everyone; it is not a hidden reviewer-only mode. Live server functions still require the user's server authorization and share account.
+Connection stages include Tailscale state/elapsed time and server/app/metrics request elapsed time plus the 30-second resource-timeout budget, not a guaranteed connection ETA.
+Cancellation during normal task transitions no longer surfaces as a server failure.

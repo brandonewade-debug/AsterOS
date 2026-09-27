@@ -12,9 +12,17 @@ import SwiftUI
     @Published var metricsError: String?
     @Published var lastUpdated: Date?
     @Published var loading = false
+    @Published private(set) var showConnectionProgress = false
     @Published var operating = false
     @Published private(set) var preferencesRevision = 0
+    @Published private(set) var connectionStage: String?
+    @Published private(set) var stageStarted: Date?
+    private var previousServerID: UUID?
     private var generation = UUID()
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+    private func stage(_ title: String) { connectionStage = title; stageStarted = Date() }
     var selected: ServerProfile? { profiles.first { $0.id == selectedID } }
     private let defaults: UserDefaults
     private let makeClient: (ServerProfile) throws -> any ServerAPI
@@ -34,14 +42,20 @@ import SwiftUI
         defaults.set(selectedID?.uuidString, forKey: "selectedServer")
     }
     func select(_ id: UUID?) {
-        generation = UUID(); demo = false; selectedID = id
+        generation = UUID(); demo = false; selectedID = id; connectionStage = nil; stageStarted = nil
         overview = nil; metrics = nil; containers = []; error = nil; dockerError = nil; metricsError = nil; lastUpdated = nil; loading = false
         persist()
     }
     func showDemo() {
-        select(nil); demo = true; overview = .demo; metrics = .demo
-        containers = [Container(id: "demo", names: ["Example app"], state: "RUNNING", status: "Sample data")]
+        guard !demo, !operating else { return }
+        previousServerID = selectedID
+        generation = UUID(); selectedID = nil; demo = true
+        overview = .demo; metrics = .demo; containers = []
+        error = nil; dockerError = nil; metricsError = nil; lastUpdated = nil
+        loading = false; connectionStage = nil; stageStarted = nil
+        // Never persist demo selection over the user's saved server.
     }
+    func exitDemo() { select(previousServerID ?? profiles.first?.id); previousServerID = nil }
     func connect(name: String, address: String, key: String, kind: ConnectionKind, profileID: UUID = UUID()) async throws {
         guard !profiles.contains(where: { $0.id == profileID }) else { throw AppError.message("This connection is already saved.") }
         let url = try AddressPolicy.validate(address)
@@ -89,24 +103,32 @@ import SwiftUI
     func refresh() async {
         guard !demo, let profile = selected, !loading, !operating else { return }
         let token = generation
-        loading = true
-        defer { if token == generation { loading = false } }
+        showConnectionProgress = lastUpdated == nil || error != nil || Date().timeIntervalSince(lastUpdated ?? .distantPast) > 30
+        loading = true; stage("Connecting to server")
+        defer { if token == generation { loading = false; showConnectionProgress = false; connectionStage = nil; stageStarted = nil } }
         do {
             let client = try makeClient(profile)
             let result = try await client.overview()
+            try Task.checkCancellation()
             guard token == generation else { return }
             overview = result; error = nil; lastUpdated = Date()
+            stage("Loading apps")
             do {
                 let result = try await client.containers()
+                try Task.checkCancellation()
                 guard token == generation else { return }
                 containers = result; dockerError = nil
-            } catch { if token == generation { dockerError = "Could not refresh apps. The last loaded list is shown and may be out of date. " + error.localizedDescription } }
+            } catch { if Self.isCancellation(error) || Task.isCancelled { return }; if token == generation { dockerError = "Could not refresh apps. The last loaded list is shown and may be out of date. " + error.localizedDescription } }
+            guard token == generation else { return }
+            stage("Loading live metrics")
             do {
                 let result = try await client.metrics()
+                try Task.checkCancellation()
                 guard token == generation else { return }
                 metrics = result; metricsError = nil
-            } catch { if token == generation { metrics = nil; metricsError = "Live metrics unavailable with this server version or API permissions." } }
+            } catch { if Self.isCancellation(error) || Task.isCancelled { return }; if token == generation { metrics = nil; metricsError = "Live metrics unavailable with this server version or API permissions." } }
         } catch {
+            guard !Self.isCancellation(error), !Task.isCancelled else { return }
             if token == generation {
                 self.error = error.localizedDescription
                 dockerError = "Server connection unavailable. The last app list may be out of date. Refresh before changing containers."
