@@ -3,6 +3,49 @@ import WebKit
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    @MainActor func testSessionOnlyLoginSurvivesFreshBrowserAndLogoutIsNotRestored() async throws {
+        let id = UUID(), server = URL(string: "https://tower.example:4443")!
+        defer { try? ServerWebSession.forget(id) }
+        let firstStore = WKWebsiteDataStore.nonPersistent()
+        let first = ServerWebSession(serverID: id, server: server, dataStore: firstStore)
+        try await first.restore()
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "tower.example", .path: "/", .name: "unraid_0123456789abcdef0123456789abcdef", .value: "synthetic-test-only", .secure: "TRUE", .discard: "TRUE", HTTPCookiePropertyKey("HttpOnly"): "TRUE"]))
+        XCTAssertTrue(cookie.isHTTPOnly)
+        XCTAssertTrue(cookie.isSessionOnly)
+        await firstStore.httpCookieStore.setCookie(cookie)
+        await first.capture(); first.stopObserving()
+        let freshStore = WKWebsiteDataStore.nonPersistent()
+        let reopened = ServerWebSession(serverID: id, server: server, dataStore: freshStore)
+        try await reopened.restore()
+        let restored = await freshStore.httpCookieStore.allCookies()
+        let restoredCookie = try XCTUnwrap(restored.first { $0.name == cookie.name })
+        XCTAssertEqual(restoredCookie.value, cookie.value)
+        XCTAssertNil(restoredCookie.expiresDate, "Do not manufacture a longer cookie lifetime")
+        XCTAssertTrue(restoredCookie.isHTTPOnly)
+        await freshStore.httpCookieStore.delete(restoredCookie)
+        await reopened.capture(); reopened.stopObserving()
+        let lastStore = WKWebsiteDataStore.nonPersistent()
+        let last = ServerWebSession(serverID: id, server: server, dataStore: lastStore)
+        try await last.restore()
+        let afterLogout = await lastStore.httpCookieStore.allCookies()
+        XCTAssertTrue(afterLogout.isEmpty)
+        last.stopObserving()
+    }
+    @MainActor func testSessionArchiveRejectsOtherOriginsAndExpiredCookies() throws {
+        let server = URL(string: "https://tower.example:4443")!
+        func cookie(domain: String, expiry: Date? = nil) throws -> HTTPCookie {
+            var properties: [HTTPCookiePropertyKey: Any] = [.domain: domain, .path: "/", .name: "unraid_0123456789abcdef0123456789abcdef", .value: "synthetic-test-only", HTTPCookiePropertyKey("HttpOnly"): "TRUE"]
+            if let expiry { properties[.expires] = expiry }
+            return try XCTUnwrap(HTTPCookie(properties: properties))
+        }
+        let data = try ServerWebSession.encode([cookie(domain: "tower.example"), cookie(domain: "other.example")], server: server)
+        XCTAssertEqual(try ServerWebSession.decode(data, server: server).count, 1)
+        XCTAssertTrue(try ServerWebSession.decode(data, server: URL(string: "https://tower.example:443")!).isEmpty)
+        XCTAssertTrue(try ServerWebSession.decode(data, server: URL(string: "https://other.example:4443")!).isEmpty)
+        XCTAssertFalse(ServerWebSession.accepts(try cookie(domain: "tower.example", expiry: Date().addingTimeInterval(-1)), server: server))
+        XCTAssertFalse(ServerWebSession.accepts(try cookie(domain: ".example"), server: server))
+    }
+
     @MainActor func testCatalogSessionSurvivesModelRecreationAndIsIsolated() async throws {
         let firstID = UUID(), otherID = UUID()
         let url = URL(string: "https://catalog-session.example")!
@@ -23,7 +66,7 @@ final class AsterOSTests: XCTestCase {
         await first.webView.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
         let cleared = await reopened.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         XCTAssertFalse(cleared.contains { $0.name == "test-session" })
-        CatalogSession.forget(serverID: otherID)
+        try CatalogSession.forget(serverID: otherID)
     }
 
     @MainActor func testShareAccountReferenceSurvivesReconnectionAndForgetClearsAliases() throws {
