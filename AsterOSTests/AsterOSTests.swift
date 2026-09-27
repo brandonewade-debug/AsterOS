@@ -408,7 +408,10 @@ final class AsterOSTests: XCTestCase {
         }
         XCTAssertNil(TerminalPolicy.commanderCommand(nonce: "'; touch /tmp/no; #"))
         let command = TerminalPolicy.commanderCommand(nonce: UUID().uuidString)!
-        XCTAssertTrue(command.contains("@wonderwhy-er/desktop-commander@0.2.51 remote"))
+        XCTAssertFalse(command.contains("npx"))
+        XCTAssertTrue(command.contains(".installed-0.2.51"))
+        XCTAssertTrue(command.contains("Reconnecting with installed Desktop Commander"))
+        XCTAssertTrue(command.contains("node \"$aster_dc_entry\" remote"))
         XCTAssertFalse(command.contains("pkill")); XCTAssertFalse(command.contains("nohup"))
     }
     @MainActor func testTerminalBridgeRequiresLiveShellAndTracksOnlyItsAgent() async throws {
