@@ -105,3 +105,12 @@ The owner completed Unraid login, approval, and the authenticated overview reque
 Device preferences confirmed one saved server, a selected profile, embedded Tailscale enabled, and a saved SMB account. The incorrect startup button came from the dashboard empty-data branch, not lost credentials. Dashboard now displays private-connection progress; API refresh begins immediately on Running instead of waiting for the polling interval.
 
 Photo backup uses explicit Photos authorization and explicit upload confirmation, a latest-five-item test option, original PhotoKit resources, per-asset completion receipts and non-overwriting staged writes. Two tests cover missing/changed/unsafe receipt resources and stable/versioned asset identities. Live uploads and restore suitability still require the owner-selected destination and photo permission; no user photo library was accessed or uploaded during development.
+
+
+### Desktop Commander startup diagnostics (2026-09-27)
+
+The user's terminal reached the saved-installation branch but showed no Desktop Commander startup output; the Unraid remote device was offline during investigation. The cause on that server is not yet confirmed. The pinned 0.2.51 CLI source accepts `remote`; reinstalling on each Start is not necessary.
+
+AsterOS now prints the Node version before importing the installed CLI, reports import exceptions, and warns after 20 seconds if package import remains pending. It preserves the CLI argv and saved session location. The native status reports delayed startup after 30 seconds without treating it as a confirmed failure or launching another process. Only a Device ready message after the current invocation marker confirms startup; historical scrollback cannot do so. Stop remains scoped to the foreground terminal.
+
+Validation includes reuse/install shell fixtures, real Node bootstrap fixtures for argv and import failures, and the WebKit regression for historical readiness output. Live reconnect on Unraid still requires verification; diagnostic success must not be presented as a connection fix.

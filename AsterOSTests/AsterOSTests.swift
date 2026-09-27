@@ -411,7 +411,7 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(command.contains("npx"))
         XCTAssertTrue(command.contains(".installed-0.2.51"))
         XCTAssertTrue(command.contains("Reconnecting with installed Desktop Commander"))
-        XCTAssertTrue(command.contains("node \"$aster_dc_entry\" remote"))
+        XCTAssertLessThan(command.utf8.count, 4096, "Launcher must fit a terminal input line")
         XCTAssertFalse(command.contains("pkill")); XCTAssertFalse(command.contains("nohup"))
     }
     @MainActor func testTerminalModelIsRetainedPerServerUntilForgotten() {
@@ -475,6 +475,11 @@ final class AsterOSTests: XCTestCase {
         XCTAssertEqual(started, true)
         let sent = try await web.evaluateJavaScript("window.sent[0]") as? String
         XCTAssertEqual(sent, command + "\r")
+        _ = try await web.callAsyncJavaScript("window.lines=['Device ready','ASTEROS_DC_BEGIN_'+nonce];", arguments: ["nonce": nonce], in: nil, contentWorld: .page)
+        let starting = try await web.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertTrue(starting?.contains("starting") == true, "Old output must not confirm a new connection")
+        let stillStarting = try await web.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertTrue(stillStarting?.contains("starting") == true)
         _ = try await web.callAsyncJavaScript("window.lines=['ASTEROS_DC_BEGIN_'+nonce,'Device ready'];", arguments: ["nonce": nonce], in: nil, contentWorld: .page)
         let running = try await web.callAsyncJavaScript(TerminalBridge.status, arguments: [:], in: nil, contentWorld: .page) as? String
         XCTAssertTrue(running?.contains("running") == true)

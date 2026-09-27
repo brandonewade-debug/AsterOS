@@ -1,5 +1,6 @@
 """Run the shipped shell template against stub executables; never install or start a real agent."""
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -56,3 +57,20 @@ touch "$destination/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
     assert 'Reconnecting with existing Desktop Commander' in run()
     assert log.read_text().splitlines().count('npm') == before
 print('PASS: first install, download-free restart, failed-install recovery, existing installation reuse')
+
+# Exercise the actual Node bootstrap without starting an agent or using a network.
+node = shutil.which('node')
+assert node, 'Node.js is required to verify the bootstrap'
+bootstrap = script.split("node --input-type=module -e '", 1)[1].split("' \"$aster_dc_entry\"", 1)[0]
+with tempfile.TemporaryDirectory(prefix='asteros-bootstrap-') as temporary:
+    entry = Path(temporary) / 'fixture.mjs'
+    entry.write_text('if (process.argv[2] !== "remote") throw new Error("Wrong launch arguments"); console.log("Device ready");')
+    result = subprocess.run([node, '--input-type=module', '-e', bootstrap, str(entry)], text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert 'Loading Desktop Commander with Node' in result.stdout
+    assert 'Device ready' in result.stdout
+    entry.write_text('throw new Error("fixture import failure");')
+    result = subprocess.run([node, '--input-type=module', '-e', bootstrap, str(entry)], text=True, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert 'Desktop Commander could not load: fixture import failure' in result.stderr
+print('PASS: real Node bootstrap preserves CLI arguments and surfaces import failures')
