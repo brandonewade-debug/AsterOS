@@ -75,7 +75,7 @@ struct ContainerRemovalView: View {
                     Label(container.name, systemImage: "shippingbox").font(.title2.bold())
                     Text("Remove this container from \(store.profiles.first { $0.id == serverID }?.name ?? "your server")?")
                     Text("A running container will be stopped immediately. Its container configuration and files stored only inside the container will be removed.")
-                    Text("The Docker image, mounted shares, volumes and app-data folders are kept. You can reinstall later from the App Store.").foregroundStyle(.secondary)
+                    Text("The Docker image, mounted shares, volumes and app-data folders are kept. You can reinstall later from Discover.").foregroundStyle(.secondary)
                 }
                 Section {
                     if removing { ProgressView("Removing container…") }
@@ -268,12 +268,17 @@ struct CatalogDialog {
     }
     func refreshNativeEditor() async {
         guard onEditor, !applyingConfiguration else { return }
+        let unavailable = "This configuration form is not ready or is unsupported. Nothing has been submitted. Reopen the editor or use the server view."
         do {
             if let json = try await webView.callAsyncJavaScript(NativeEditorBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as? String,
                let data = json.data(using: .utf8), data.count < 2_000_000, onEditor, !applyingConfiguration, configurationResult == nil {
                 nativeEditor = try JSONDecoder().decode(EditorForm.self, from: data)
+                if error == unavailable { error = nil }
+            } else if onEditor, !loading, !applyingConfiguration, configurationResult == nil {
+                nativeEditor = nil
+                error = unavailable
             }
-        } catch { self.error = "Could not read the container configuration. Your settings have not been applied." }
+        } catch { nativeEditor = nil; self.error = "Could not read the container configuration. Your settings have not been applied." }
     }
     @discardableResult func updateEditorField(_ field: EditorField, value: String = "", checked: Bool = false, values: [String] = []) async -> Bool {
         await mutateEditor(NativeEditorBridge.update, arguments: ["fieldID": field.id, "value": value, "checked": checked, "values": values])
@@ -383,7 +388,9 @@ struct CatalogDialog {
         timeout?.cancel(); loading = false; canGoBack = webView.canGoBack
         if applyingConfiguration {
             applyingConfiguration = false; nativeEditor = nil
-            configurationResult = "Unraid finished responding to the configuration request. Verify the container in Apps."
+            configurationResult = webView.url?.lastPathComponent.lowercased() == "login"
+                ? "Your server sign-in expired during this request. The apply result is unknown. Renew access and check the container before retrying."
+                : "Unraid finished responding to the configuration request. Verify the container in Apps."
         }
         guard let url = webView.url else { return }
         host = url.host ?? ""
@@ -399,11 +406,11 @@ struct CatalogDialog {
         if applyingConfiguration && (error as NSError).code != NSURLErrorCancelled {
             applyingConfiguration = false; nativeEditor = nil; configurationResult = "The apply result could not be confirmed."
         }
-        if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load the server App Store (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
+        if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load Discover (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, (url.scheme == "https" && url.user == nil && url.password == nil) || url.absoluteString == "about:blank" else {
-            error = "The server App Store requires a secure HTTPS page."; decisionHandler(.cancel); return
+            error = "Discover requires a secure HTTPS page."; decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
     }

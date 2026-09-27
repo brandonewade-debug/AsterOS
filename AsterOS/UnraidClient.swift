@@ -7,7 +7,14 @@ final class RejectRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendab
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
-final class UnraidClient {
+protocol ServerAPI {
+    func overview() async throws -> Overview
+    func containers() async throws -> [Container]
+    func metrics() async throws -> Metrics
+    func perform(_ action: ContainerAction, id: String) async throws
+    func removeContainer(id: String) async throws
+}
+final class UnraidClient: ServerAPI {
     let profile: ServerProfile
     private let key: String
     init(profile: ServerProfile, key: String) { self.profile = profile; self.key = key }

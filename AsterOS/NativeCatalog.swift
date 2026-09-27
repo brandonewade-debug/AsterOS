@@ -194,7 +194,7 @@ struct NativeAppStoreView: View {
                         }.padding(24).frame(maxWidth: 760).frame(maxWidth: .infinity)
                     }.refreshable { query = ""; category = "All"; model.openCatalog() }
                 }
-            }.navigationTitle(showServer ? (model.nativeEditor != nil ? "Configure app" : "App requirements") : "App Store").navigationBarTitleDisplayMode(showServer ? .inline : .large)
+            }.navigationTitle(showServer ? (model.nativeEditor != nil ? "Configure app" : "App requirements") : "Discover").navigationBarTitleDisplayMode(showServer ? .inline : .large)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button(showServer ? "Catalog" : "Done") { if showServer { if model.nativeEditor != nil { discardEditor = true } else { showServer = false; loginOnly = false; model.openCatalog() } } else { dismiss() } }.disabled(model.applyingConfiguration)

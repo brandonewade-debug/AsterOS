@@ -592,6 +592,11 @@ final class AsterOSTests: XCTestCase {
         XCTAssertEqual(after, 1)
         let csrf = try await web.evaluateJavaScript("document.querySelector('[name=csrf_token]').value") as? String
         XCTAssertEqual(csrf, "csrf-secret")
+        _ = try await web.evaluateJavaScript("document.querySelector('form').action='https://outside.invalid/receive'")
+        let external = try await web.callAsyncJavaScript(NativeEditorBridge.apply, arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertNil(external, "An unexpected external form target must not receive configuration or CSRF data")
+        let unchanged = try await web.evaluateJavaScript("window.applied") as? Int
+        XCTAssertEqual(unchanged, 1)
         web.navigationDelegate = nil
     }
     @MainActor func testContainerEditorUsesSavedTemplateAndAdvancedToggleDoesNotSubmit() async throws {

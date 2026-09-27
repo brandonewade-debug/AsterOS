@@ -41,6 +41,12 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             if let server = store.selected, TailnetPolicy.contains(server.address.host ?? ""), !vpn.running { return }
             while !Task.isCancelled {
+                // A cancelled previous foreground refresh may still be unwinding.
+                // Wait briefly instead of skipping the reconnect for a full poll interval.
+                if store.loading || store.operating {
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { break }
+                    continue
+                }
                 await store.refresh()
                 do { try await Task.sleep(for: .seconds(15)) } catch { break }
             }
@@ -108,7 +114,9 @@ struct DashboardView: View {
                 }.padding(20).frame(maxWidth: 900)
             }.frame(maxWidth: .infinity).background { AsterBackdrop() }
                 .navigationTitle("AsterOS")
-                .toolbar { Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(store.loading || store.demo || store.selected == nil).accessibilityLabel("Refresh server") }
+                .toolbar {
+                    if let server = store.selected, !store.demo { NavigationLink { ServerAlertsView(server: server) } label: { Image(systemName: "bell") }.accessibilityLabel("Server alerts") }
+                    Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(store.loading || store.demo || store.selected == nil).accessibilityLabel("Refresh server") }
                 .refreshable { await store.refresh() }.sheet(isPresented: $setup) { ConnectionView() }
         }
     }
@@ -122,6 +130,8 @@ struct DashboardView: View {
     }
 }
 struct ConnectionView: View {
+    var renewing: ServerProfile? = nil
+    @State private var prepared = false
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage("connectionDraftName") private var name = ""
@@ -147,15 +157,15 @@ struct ConnectionView: View {
                     NavigationLink { TailnetSetupView() } label: { Label("Connect with Tailscale", systemImage: "network.badge.shield.half.filled") }
                 }
                 Section {
-                    TextField("Server name", text: $name)
-                    Picker("Method", selection: $kind) { ForEach(ConnectionKind.allCases) { Text($0.rawValue).tag($0) } }
-                    TextField("https://server.example.com", text: $address).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("Server name", text: $name).disabled(renewing != nil)
+                    Picker("Method", selection: $kind) { ForEach(ConnectionKind.allCases) { Text($0.rawValue).tag($0) } }.disabled(renewing != nil)
+                    TextField("https://server.example.com", text: $address).disabled(renewing != nil).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("Connection") } footer: {
                     Text("Enter your server address, then sign in below. No API key needs to be copied.")
                 }
                 Section {
                     Toggle("Manage Docker apps", isOn: $allowDockerManagement)
-                    Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Allows native container removal; new apps are installed through the server App Store." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
+                    Text(allowDockerManagement ? "Requests Docker create, update, and delete access alongside monitoring. Allows native container removal; new apps are installed through Discover." : "View server status without changing containers.").font(.caption).foregroundStyle(.secondary)
                     Button {
                         do {
                             error = nil
@@ -167,7 +177,7 @@ struct ConnectionView: View {
                     .disabled(busy || address.isEmpty)
                     if busy { ProgressView("Verifying your connection…") }
                 } header: { Text("Connect through your server") } footer: {
-                    Text("Sign in → approve AsterOS → connected. Your app credential is stored in Keychain, and your server login is remembered for the App Store. Website protection such as Cloudflare Access or Organizr still requires a compatible connection route.")
+                    Text("Sign in → approve AsterOS → connected. Your app credential is stored in Keychain, and your server login is remembered for Discover. Website protection such as Cloudflare Access or Organizr still requires a compatible connection route.")
                 }
                 if kind == .connect { Section { Text("Use the server URL from Connect’s Manage link. This does not sign into your Unraid.net account or route Docker apps through Connect.") } }
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
@@ -179,7 +189,14 @@ struct ConnectionView: View {
                     }
                     Button("Explore demo") { store.showDemo(); dismiss() }.disabled(busy)
                 }
-            }.navigationTitle("Connect your server")
+            }.navigationTitle(renewing == nil ? "Connect your server" : "Renew server access")
+                .onAppear {
+                    if !prepared, let renewing {
+                        name = renewing.name; address = renewing.address.absoluteString
+                        kind = renewing.connection; connectionID = renewing.id
+                    }
+                    prepared = true
+                }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
                 .interactiveDismissDisabled(busy)
                 .sheet(item: $authorization) { request in
@@ -193,7 +210,11 @@ struct ConnectionView: View {
         busy = true; error = nil
         Task {
             defer { busy = false }
-            do { try await store.connect(name: name, address: address, key: key, kind: kind, profileID: connectionID); key = ""; dismiss() }
+            do {
+                if let renewing { try await store.renewAuthorization(serverID: renewing.id, key: key) }
+                else { try await store.connect(name: name, address: address, key: key, kind: kind, profileID: connectionID) }
+                key = ""; dismiss()
+            }
             catch { self.error = error.localizedDescription }
         }
     }
@@ -262,9 +283,12 @@ struct ContainerDetailsView: View {
                     Button("Change icon", systemImage: "photo") {
                         if let server = store.selected?.address { customIcon = CustomIconTarget(app: "container:" + container.name.lowercased(), name: container.name, server: server) }
                     }.disabled(store.demo)
+                    if let server = store.selected, !store.demo {
+                        NavigationLink { ContainerLogsView(server: server, container: container) } label: { Label("Container logs", systemImage: "text.alignleft") }
+                    }
                     Button("Edit container configuration", systemImage: "slider.horizontal.3") {
                         if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) }
-                    }.disabled(store.demo || store.operating)
+                    }.disabled(store.demo || store.operating || store.dockerError != nil)
                     if let configured = container.webAddress(server: store.selected?.address) {
                         LabeledContent("Unraid WebUI") { Text(configured.absoluteString).font(.caption).textSelection(.enabled) }
                         Text("Tapping the app opens its configured Unraid WebUI unless you set an external URL override.").font(.caption).foregroundStyle(.secondary)
@@ -313,6 +337,7 @@ struct PlannedView: View {
     }
 }
 struct SettingsView: View {
+    @State private var renewing: ServerProfile?
     @EnvironmentObject var store: AppStore
     @State private var adding = false
     @State private var removing = false
@@ -326,7 +351,7 @@ struct SettingsView: View {
                     }
                     Button("Add server") { adding = true }
                     Button("Explore demo") { store.showDemo() }
-                    if store.selected != nil { Button("Remove selected server", role: .destructive) { removing = true } }
+                    if let server = store.selected { Button("Renew server access") { renewing = server }; Button("Remove selected server", role: .destructive) { removing = true } }
                 }
                 Section("Security") { NavigationLink { AppSecuritySettings() } label: { Label("App security", systemImage: "lock.shield") } }
                 Section("Remote access") {
@@ -335,17 +360,21 @@ struct SettingsView: View {
                 if let server = store.selected, !store.demo {
                     Section("Server tools") {
                         NavigationLink { ServerTerminalView(server: server) } label: { Label("Terminal", systemImage: "terminal") }
+                        NavigationLink { ServerAlertsView(server: server) } label: { Label("Server alerts", systemImage: "bell") }
+                        NavigationLink { PreferencesBackupView(server: server) } label: { Label("Preferences backup", systemImage: "square.and.arrow.up") }
                         Text("Desktop Commander controls are available in the terminal’s options menu.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Section("Support") { NavigationLink { SupportReportView() } label: { Label("Support report", systemImage: "doc.text.magnifyingglass") } }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
                     Text("0.1.0 • Preview")
-                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes an integrated server App Store and container removal. Includes server terminal access. Optional PIN and biometric app lock are available. Notifications are still planned.").foregroundStyle(.secondary)
+                    Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes Discover for Unraid apps and container removal. Includes server terminal access. Optional PIN and biometric app lock are available. Unread server alerts and searchable Docker logs require compatible API permissions and server versions. Photo backup runs while this app is open; background push alerts are not included.").foregroundStyle(.secondary)
                 }
-                Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. App browser cookies are kept only for the current browser session.") }
+                Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. Your Unraid web sign-in is remembered on this device for server tools. Saved server session cookies are protected in Keychain. External app websites use their own browser sessions.") }
                 if let error { Text(error).foregroundStyle(.orange) }
             }.navigationTitle("Settings").sheet(isPresented: $adding) { ConnectionView() }
+                .sheet(item: $renewing) { ConnectionView(renewing: $0) }
                 .confirmationDialog("Remove this connection and its saved API key?", isPresented: $removing, titleVisibility: .visible) {
                     Button("Remove", role: .destructive) { do { try store.removeSelected() } catch { self.error = error.localizedDescription } }
                 }

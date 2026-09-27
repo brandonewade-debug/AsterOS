@@ -20,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix='asteros-dc-test-') as temporary:
     appdata = root / 'appdata'; appdata.mkdir()
     log = root / 'calls'
     env = dict(os.environ, PATH=str(bindir) + ':/bin:/usr/bin', ASTER_TEST_LOG=str(log))
+    executable(bindir / 'flock', 'test \"$ASTER_TEST_LOCKED\" != 1\n')
     executable(bindir / 'node', 'printf "node\\n" >> "$ASTER_TEST_LOG"\nprintf "Device ready\\n"\n')
     executable(bindir / 'npm', '''printf "npm\\n" >> "$ASTER_TEST_LOG"
 if [ "$ASTER_TEST_FAIL" = 1 ]; then exit 1; fi
@@ -44,6 +45,11 @@ touch "$destination/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
     second = run()
     assert 'Reconnecting with installed Desktop Commander' in second
     assert log.read_text().splitlines() == ['npm', 'node', 'node']
+    before_locked = log.read_text()
+    env['ASTER_TEST_LOCKED'] = '1'
+    assert 'already starting or running' in run(success=False)
+    assert log.read_text() == before_locked, 'A duplicate launch must not start Node or npm'
+    env.pop('ASTER_TEST_LOCKED')
     # Direct storage is used only for one valid backing location with a matching entry.
     mounts = root / 'mounts'
     direct = mounts / 'dockercache/appdata/asteros/desktop-commander'

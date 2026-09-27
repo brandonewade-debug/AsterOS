@@ -17,6 +17,8 @@ enum NativeEditorBridge {
     static let helpers = #"""
     const form = document.querySelector('#canvas form[method="POST"], #canvas form[method="post"]');
     if (!form || !form.querySelector('[name="contName"]')) return null;
+    const destination = new URL(form.action || location.href, location.href);
+    if (destination.origin !== location.origin || destination.username || destination.password || typeof form.requestSubmit !== 'function') return null;
     const visible = (el, includeSelf = true) => {
         for(let node = includeSelf ? el : el.parentElement; node; node = node.parentElement) {
             const style = getComputedStyle(node);
