@@ -62,6 +62,7 @@ struct UnraidAuthorization: Identifiable {
 @MainActor final class UnraidSignInModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let request: UnraidAuthorization
     let webView: WKWebView
+    private let session: ServerWebSession
     private var routeObserver: AnyCancellable?
     @Published var error: String?
     @Published var loading = true
@@ -74,8 +75,10 @@ struct UnraidAuthorization: Identifiable {
         host = (request.server.host ?? "Unraid") + (request.server.port.map { ":\($0)" } ?? "")
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = CatalogSession.dataStore(serverID: request.profileID)
+        session = ServerWebSession(serverID: request.profileID, server: request.server, dataStore: configuration.websiteDataStore)
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        session.onError = { [weak self] message in self?.error = message }
         routeObserver = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
             self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies
         }
@@ -93,7 +96,8 @@ struct UnraidAuthorization: Identifiable {
             do {
                 guard action.targetFrame?.isMainFrame == true else { throw AppError.message("Unexpected sign-in response. Please try again.") }
                 let key = try request.key(from: url)
-                completed = true; loading = false; authorizedKey = key
+                completed = true; loading = false
+                Task { await session.capture(); authorizedKey = key }
             } catch { self.error = error.localizedDescription; loading = false }
             return
         }
@@ -124,6 +128,7 @@ struct UnraidAuthorization: Identifiable {
         Task { [weak self] in
             guard let self else { return }
             do {
+                try await self.session.restore()
                 self.webView.configuration.websiteDataStore.proxyConfigurations = try await TailnetStore.shared.prepare(for: self.request.server.host)
                 var navigation = URLRequest(url: self.request.authorizationURL())
                 navigation.timeoutInterval = 25

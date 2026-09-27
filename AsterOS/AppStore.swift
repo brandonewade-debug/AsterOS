@@ -52,7 +52,7 @@ import SwiftUI
         guard let id = selectedID else { select(profiles.first?.id); return }
         try DirectFilesStore.forget(serverID: id, address: selected?.address)
         try CredentialStore.remove(id)
-        CatalogSession.forget(serverID: id)
+        try CatalogSession.forget(serverID: id)
         profiles.removeAll { $0.id == id }; select(profiles.first?.id)
     }
     func addApp(name: String, address: String, containerID: String? = nil) throws {

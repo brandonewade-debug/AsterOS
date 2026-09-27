@@ -63,7 +63,8 @@ enum CatalogPolicy {
     static func dataStore(serverID: UUID) -> WKWebsiteDataStore {
         WKWebsiteDataStore(forIdentifier: serverID)
     }
-    static func forget(serverID: UUID) {
+    static func forget(serverID: UUID) throws {
+        try ServerWebSession.forget(serverID)
         dataStore(serverID: serverID).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { }
     }
 }
@@ -76,6 +77,7 @@ struct CatalogDialog {
 @MainActor final class CatalogBrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     let catalog: URL
+    let session: ServerWebSession
     @Published var catalogItems: [CatalogApp] = []
     @Published var catalogReady = false
     @Published var catalogBusy = false
@@ -97,8 +99,10 @@ struct CatalogDialog {
         let config = WKWebViewConfiguration()
         // The server owns its login and install forms. No API keys or password scraping.
         config.websiteDataStore = CatalogSession.dataStore(serverID: serverID)
+        session = ServerWebSession(serverID: serverID, server: server, dataStore: config.websiteDataStore)
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
+        session.onError = { [weak self] message in self?.error = message }
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         observer = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
@@ -115,6 +119,7 @@ struct CatalogDialog {
         connectionTask = Task { [weak self] in
             guard let self else { return }
             do {
+                try await session.restore()
                 let proxies = try await TailnetStore.shared.prepare(for: catalog.host)
                 try Task.checkCancellation()
                 webView.configuration.websiteDataStore.proxyConfigurations = proxies
