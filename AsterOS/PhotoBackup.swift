@@ -19,6 +19,31 @@ struct PhotoBackupCheckpoint: Codable {
     let total: Int
     let finished: Bool
 }
+@MainActor enum PhotoDestinationPolicy {
+    static func components(_ path: String) throws -> [String] {
+        if path.isEmpty { return [] } // The selected share root is a valid destination.
+        return try path.split(separator: "/", omittingEmptySubsequences: false).map { try SharePolicy.name(String($0)) }
+    }
+    static func settingsKey(serverID: UUID, address: URL?, knownServerIDs: [UUID], defaults: UserDefaults) -> String {
+        let legacy = "photoBackup-" + serverID.uuidString
+        guard let address else { return legacy }
+        let key = "photoBackupAddress-" + AppFoldersStore.addressKey(address)
+        guard defaults.object(forKey: key) == nil else { return key }
+        var source: String? = defaults.dictionary(forKey: legacy) != nil ? legacy : nil
+        if source == nil, knownServerIDs == [serverID] {
+            let candidates = defaults.dictionaryRepresentation().keys.filter { name in
+                name.hasPrefix("photoBackup-") && UUID(uuidString: String(name.dropFirst("photoBackup-".count))) != nil && defaults.dictionary(forKey: name) != nil
+            }
+            if candidates.count == 1 { source = candidates[0] }
+        }
+        if let source {
+            for suffix in ["", "-layout", "-timeZone", "-checkpoint"] {
+                if let value = defaults.object(forKey: source + suffix) { defaults.set(value, forKey: key + suffix) }
+            }
+        }
+        return key
+    }
+}
 enum PhotoFolderLayout: String, CaseIterable, Identifiable {
     case monthly, daily
     var id: String { rawValue }
@@ -54,12 +79,14 @@ enum PhotoBackupPolicy {
 }
 
 @MainActor final class PhotoBackupStore: ObservableObject {
-    @Published var share = ""
-    @Published var folder = "AsterOS Photos"
+    @Published var share = "" { didSet { saveDestination() } }
+    @Published var folder = "AsterOS Photos" { didSet { saveDestination() } }
     @Published var layout: PhotoFolderLayout = .monthly {
-        didSet { UserDefaults.standard.set(layout.rawValue, forKey: settingsKey + "-layout") }
+        didSet { defaults.set(layout.rawValue, forKey: settingsKey + "-layout") }
     }
     @Published var shares: [String] = []
+    @Published private(set) var folderEntries: [String] = []
+    @Published private(set) var browsedPath: String?
     @Published private(set) var busy = false
     @Published private(set) var backingUp = false
     @Published private(set) var status = "Choose a backup destination"
@@ -69,30 +96,44 @@ enum PhotoBackupPolicy {
     @Published private(set) var progress: Double = 0
     @Published private(set) var limited = false
     @Published var error: String?
+    private let defaults: UserDefaults
     private let serverID: UUID
+    private let serverAddress: URL?
     private var client: SMBClient?
     private var watchdog: Task<Void, Never>?
     private var task: Task<Void, Never>?
     private var paused = false
     private var timedOut = false
-    private var settingsKey: String { "photoBackup-" + serverID.uuidString }
-    var hasShareAccount: Bool { UserDefaults.standard.data(forKey: "directShares-" + serverID.uuidString) != nil }
-    init(serverID: UUID) {
-        self.serverID = serverID
-        if let saved = UserDefaults.standard.dictionary(forKey: settingsKey) as? [String: String] {
+    private let settingsKey: String
+    var hasShareAccount: Bool { ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) != nil }
+    init(serverID: UUID, address: URL? = nil, knownServerIDs: [UUID] = [], defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.serverID = serverID; self.serverAddress = address
+        settingsKey = PhotoDestinationPolicy.settingsKey(serverID: serverID, address: address, knownServerIDs: knownServerIDs, defaults: defaults)
+        if let saved = defaults.dictionary(forKey: settingsKey) as? [String: String] {
             share = saved["share"] ?? ""; folder = saved["folder"] ?? "AsterOS Photos"
         }
-        layout = UserDefaults.standard.string(forKey: settingsKey + "-layout").flatMap(PhotoFolderLayout.init(rawValue:)) ?? .monthly
-        if let data = UserDefaults.standard.data(forKey: settingsKey + "-checkpoint"),
+        layout = defaults.string(forKey: settingsKey + "-layout").flatMap(PhotoFolderLayout.init(rawValue:)) ?? .monthly
+        restoreCheckpoint()
+        refreshPhotoCount()
+    }
+    private func saveDestination() {
+        guard !busy, (try? SharePolicy.name(share)) != nil, (try? PhotoDestinationPolicy.components(folder)) != nil else { return }
+        defaults.set(["share": share, "folder": folder], forKey: settingsKey)
+        restoreCheckpoint()
+    }
+    private func restoreCheckpoint() {
+        completed = 0; total = 0; progress = 0
+        status = "Choose a backup destination"
+        if let data = defaults.data(forKey: settingsKey + "-checkpoint"),
            let saved = try? JSONDecoder().decode(PhotoBackupCheckpoint.self, from: data), saved.share == share, saved.folder == folder {
             completed = saved.completed; total = saved.total
             status = saved.finished ? "Last backup complete · \(saved.completed) items" : "Saved progress · \(saved.completed) of \(saved.total) items · tap Back up now to resume"
         }
-        refreshPhotoCount()
     }
     private func saveCheckpoint(share: String, folder: String, finished: Bool = false) {
         let saved = PhotoBackupCheckpoint(share: share, folder: folder, completed: completed, total: total, finished: finished)
-        if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: settingsKey + "-checkpoint") }
+        if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: settingsKey + "-checkpoint") }
     }
     func refreshPhotoCount() {
         let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -124,10 +165,9 @@ enum PhotoBackupPolicy {
         }
     }
     private func openShareClient() async throws -> SMBClient {
-        guard let data = UserDefaults.standard.data(forKey: "directShares-" + serverID.uuidString) else {
+        guard let connection = ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) else {
             throw AppError.message("Connect your Unraid share account in Files first, then return here.")
         }
-        let connection = try JSONDecoder().decode(ShareConnection.self, from: data)
         _ = try await TailnetStore.shared.prepare(for: connection.host)
         try check()
         let result = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
@@ -147,8 +187,26 @@ enum PhotoBackupPolicy {
         do {
             let client = try await openShareClient()
             shares = try await client.listShares().filter { $0.type == .diskTree && (try? SharePolicy.name($0.name)) != nil }.map(\.name).sorted()
-            if !shares.contains(share) { share = "" }
-            status = "Choose a share and grant Photos access"
+            if !share.isEmpty && !shares.contains(share) {
+                error = "Your saved share is currently unavailable. Its destination and progress have been kept; check the share account permissions."
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+    func listFolders(path: String) async {
+        guard !busy else { return }
+        busy = true; error = nil; paused = false; timedOut = false
+        browsedPath = nil; folderEntries = []
+        defer { finish() }
+        do {
+            _ = try SharePolicy.name(share)
+            _ = try PhotoDestinationPolicy.components(path)
+            let client = try await openShareClient()
+            try await client.connectShare(share); try check(); touch()
+            let entries = try await client.listDirectory(path: path)
+            try check()
+            folderEntries = entries.filter { $0.isDirectory && (try? SharePolicy.name($0.name)) != nil }.map(\.name)
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            browsedPath = path
         } catch { self.error = error.localizedDescription }
     }
     func start(limit: Int? = nil) {
@@ -166,24 +224,30 @@ enum PhotoBackupPolicy {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("asteros-photos-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary); finish() }
         do {
-            _ = try SharePolicy.name(share); _ = try SharePolicy.name(folder)
+            _ = try SharePolicy.name(share); let rootComponents = try PhotoDestinationPolicy.components(folder)
             let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             guard auth == .authorized || auth == .limited else { throw AppError.message("Tap Allow Photos before starting backup.") }
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
             let client = try await openShareClient()
             try await client.connectShare(share); try check(); touch()
-            let root = try await client.listDirectory(path: "")
-            if let existing = root.first(where: { $0.name == folder }) {
-                guard existing.isDirectory else { throw AppError.message("The backup folder name is already used by a file.") }
-            } else { try await client.createDirectory(path: folder) }
-            UserDefaults.standard.set(["share": share, "folder": folder], forKey: settingsKey)
+            var rootPath = ""
+            for component in rootComponents {
+                try check(); touch()
+                let children = try await client.listDirectory(path: rootPath)
+                let next = try SharePolicy.child(component, in: rootPath)
+                if let existing = children.first(where: { $0.name == component }) {
+                    guard existing.isDirectory else { throw AppError.message("The backup folder path is already used by a file.") }
+                } else { try await client.createDirectory(path: next) }
+                rootPath = next
+            }
+            defaults.set(["share": share, "folder": folder], forKey: settingsKey)
             let folders = try await client.listDirectory(path: folder)
             let legacyFolders = Set(folders.filter(\.isDirectory).map(\.name))
             var cachedFolders: [String: Set<String>] = [folder: legacyFolders]
             var cachedSizes: [String: [String: UInt64]] = [:]
             let timeZoneKey = settingsKey + "-timeZone"
-            let timeZone = UserDefaults.standard.string(forKey: timeZoneKey).flatMap(TimeZone.init(identifier:)) ?? .current
-            UserDefaults.standard.set(timeZone.identifier, forKey: timeZoneKey)
+            let timeZone = defaults.string(forKey: timeZoneKey).flatMap(TimeZone.init(identifier:)) ?? .current
+            defaults.set(timeZone.identifier, forKey: timeZoneKey)
             let fetched = assets(); count = fetched.count
             total = min(count, max(0, limit ?? count))
             saveCheckpoint(share: share, folder: folder)
@@ -329,7 +393,7 @@ enum PhotoBackupPolicy {
 struct PhotosView: View {
     @EnvironmentObject var app: AppStore
     var body: some View {
-        if let server = app.selected, !app.demo { PhotoBackupView(server: server).id("photos-" + server.id.uuidString) }
+        if let server = app.selected, !app.demo { PhotoBackupView(server: server, knownServerIDs: app.profiles.map(\.id)).id("photos-" + server.id.uuidString) }
         else { NavigationStack { ContentUnavailableView("Connect your server", systemImage: "photo", description: Text("Connect Unraid to set up photo backup to one of its shares.")).navigationTitle("Photos") } }
     }
 }
@@ -339,7 +403,8 @@ struct PhotoBackupView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
     @State private var confirm = false
-    init(server: ServerProfile) { self.server = server; _backup = StateObject(wrappedValue: PhotoBackupStore(serverID: server.id)) }
+    @State private var choosingFolder = false
+    init(server: ServerProfile, knownServerIDs: [UUID]) { self.server = server; _backup = StateObject(wrappedValue: PhotoBackupStore(serverID: server.id, address: server.address, knownServerIDs: knownServerIDs)) }
     var body: some View {
         NavigationStack {
             GlassForm {
@@ -355,7 +420,14 @@ struct PhotoBackupView: View {
                         if !backup.share.isEmpty && !backup.shares.contains(backup.share) { Text(backup.share).tag(backup.share) }
                         ForEach(backup.shares, id: \.self) { Text($0).tag($0) }
                     }.disabled(backup.busy)
-                    TextField("Backup folder", text: $backup.folder).disabled(backup.busy).autocorrectionDisabled()
+                    Button { choosingFolder = true } label: {
+                        Label(backup.folder.isEmpty ? "Share root" : backup.folder, systemImage: "folder")
+                    }.disabled(backup.busy || backup.share.isEmpty)
+                    Text("Tap the folder to browse your share. To resume, choose the original backup folder containing Photos/Videos or the older year folders.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("New folder or manual path") {
+                        TextField("Folder path inside share", text: $backup.folder).disabled(backup.busy).autocorrectionDisabled().textInputAutocapitalization(.never)
+                        Text("New folders are created when backup starts. Leave blank to use the share root.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Picker("Organize by", selection: $backup.layout) {
                         ForEach(PhotoFolderLayout.allCases) { Text($0.label).tag($0) }
                     }.disabled(backup.busy)
@@ -378,12 +450,52 @@ struct PhotoBackupView: View {
                     Text("This first version backs up files and edit resources, not album organization. It does not delete photos or provide a one-tap Photos-library restore.")
                 }.font(.caption).foregroundStyle(.secondary)
             }.navigationTitle("Photos")
+                .sheet(isPresented: $choosingFolder) { PhotoBackupFolderPicker(backup: backup) }
+                .onChange(of: backup.share) { _, share in if !share.isEmpty { choosingFolder = true } }
                 .onChange(of: scenePhase) { _, phase in if phase == .background { backup.pause() }; if phase == .active { backup.refreshPhotoCount() } }
                 .onDisappear { backup.pause() }
                 .confirmationDialog("Back up \(backup.count) accessible items?", isPresented: $confirm, titleVisibility: .visible) {
                     Button("Test latest 5 items") { backup.start(limit: 5) }
                     Button("Back up all accessible items") { backup.start() }
                 } message: { Text("Destination: \(backup.share)/\(backup.folder). Photos and videos will be uploaded; nothing on your phone will be deleted.") }
+        }
+    }
+}
+
+struct PhotoBackupFolderPicker: View {
+    @ObservedObject var backup: PhotoBackupStore
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            GlassForm {
+                Section {
+                    Label(backup.share + (backup.browsedPath.flatMap { $0.isEmpty ? nil : "/" + $0 } ?? ""), systemImage: "externaldrive").font(.headline)
+                    Text("Choose the original backup root to continue an existing backup. Completed items are verified and skipped.").font(.caption).foregroundStyle(.secondary)
+                    if backup.busy { ProgressView("Loading folders…") }
+                    if let error = backup.error { Text(error).foregroundStyle(.orange) }
+                    if let path = backup.browsedPath, !path.isEmpty {
+                        Button("Parent folder", systemImage: "chevron.up") {
+                            Task { await backup.listFolders(path: path.split(separator: "/").dropLast().joined(separator: "/")) }
+                        }.disabled(backup.busy)
+                    }
+                    Button("Share root", systemImage: "house") { Task { await backup.listFolders(path: "") } }.disabled(backup.busy)
+                }
+                Section("Folders") {
+                    ForEach(backup.folderEntries, id: \.self) { name in
+                        Button { if let path = backup.browsedPath, let next = try? SharePolicy.child(name, in: path) { Task { await backup.listFolders(path: next) } } } label: {
+                            HStack { Label(name, systemImage: "folder.fill"); Spacer(); Image(systemName: "chevron.right") }
+                        }.disabled(backup.busy)
+                    }
+                    if !backup.busy && backup.browsedPath != nil && backup.folderEntries.isEmpty { Text("No subfolders").foregroundStyle(.secondary) }
+                }
+                Section {
+                    Button("Use this folder") { if let path = backup.browsedPath { backup.folder = path; dismiss() } }
+                        .buttonStyle(.borderedProminent).disabled(backup.busy || backup.browsedPath == nil)
+                }
+            }.navigationTitle("Choose backup folder").navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("Cancel") { dismiss() }.disabled(backup.busy) }
+                .interactiveDismissDisabled(backup.busy)
+                .task { await backup.listFolders(path: "") }
         }
     }
 }

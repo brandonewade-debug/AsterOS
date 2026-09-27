@@ -50,7 +50,7 @@ import SwiftUI
     }
     func removeSelected() throws {
         guard let id = selectedID else { select(profiles.first?.id); return }
-        try DirectFilesStore.forget(serverID: id)
+        try DirectFilesStore.forget(serverID: id, address: selected?.address)
         try CredentialStore.remove(id)
         CatalogSession.forget(serverID: id)
         profiles.removeAll { $0.id == id }; select(profiles.first?.id)

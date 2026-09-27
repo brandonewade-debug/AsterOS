@@ -8,6 +8,34 @@ struct ShareConnection: Codable {
     let username: String
 }
 
+@MainActor enum ShareSettings {
+    static func addressKey(_ address: URL) -> String { "directShareAddress-" + AppFoldersStore.addressKey(address) }
+    static func load(serverID: UUID, address: URL?, defaults: UserDefaults = .standard) -> ShareConnection? {
+        let legacy = "directShares-" + serverID.uuidString
+        let canonical = address.map(addressKey)
+        guard let data = canonical.flatMap({ defaults.data(forKey: $0) }) ?? defaults.data(forKey: legacy),
+              let connection = try? JSONDecoder().decode(ShareConnection.self, from: data) else { return nil }
+        defaults.set(data, forKey: legacy)
+        if let canonical { defaults.set(data, forKey: canonical) }
+        return connection
+    }
+    static func save(_ connection: ShareConnection, serverID: UUID, address: URL?, defaults: UserDefaults = .standard) throws {
+        let data = try JSONEncoder().encode(connection)
+        if let previous = load(serverID: serverID, address: address, defaults: defaults) {
+            for key in keys(for: previous.id, defaults: defaults) { defaults.set(data, forKey: key) }
+        }
+        defaults.set(data, forKey: "directShares-" + serverID.uuidString)
+        if let address { defaults.set(data, forKey: addressKey(address)) }
+    }
+    static func keys(for connectionID: UUID, defaults: UserDefaults = .standard) -> [String] {
+        defaults.dictionaryRepresentation().keys.filter { key in
+            guard key.hasPrefix("directShares-") || key.hasPrefix("directShareAddress-"),
+                  let data = defaults.data(forKey: key), let saved = try? JSONDecoder().decode(ShareConnection.self, from: data) else { return false }
+            return saved.id == connectionID
+        }
+    }
+}
+
 enum SharePolicy {
     static func host(_ input: String) throws -> String {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -52,24 +80,22 @@ struct DirectFile: Identifiable {
     @Published var downloaded: DownloadedFile?
     @Published var progress: Double?
     private let serverID: UUID
+    private let serverAddress: URL?
     private var activeClient: SMBClient?
     private var watchdog: Task<Void, Never>?
     private var cancelled = false
     private var timedOut = false
     private var defaultsKey: String { "directShares-" + serverID.uuidString }
 
-    init(serverID: UUID) {
-        self.serverID = serverID
-        if let data = UserDefaults.standard.data(forKey: "directShares-" + serverID.uuidString) {
-            connection = try? JSONDecoder().decode(ShareConnection.self, from: data)
-        }
+    init(serverID: UUID, address: URL? = nil) {
+        self.serverID = serverID; self.serverAddress = address
+        connection = ShareSettings.load(serverID: serverID, address: address)
     }
-    static func forget(serverID: UUID) throws {
-        let key = "directShares-" + serverID.uuidString
-        if let data = UserDefaults.standard.data(forKey: key), let connection = try? JSONDecoder().decode(ShareConnection.self, from: data) {
+    static func forget(serverID: UUID, address: URL? = nil) throws {
+        if let connection = ShareSettings.load(serverID: serverID, address: address) {
             try CredentialStore.remove(connection.id)
+            for key in ShareSettings.keys(for: connection.id) { UserDefaults.standard.removeObject(forKey: key) }
         }
-        UserDefaults.standard.removeObject(forKey: key)
     }
     private func touchTimeout() {
         watchdog?.cancel()
@@ -132,13 +158,12 @@ struct DirectFile: Identifiable {
             try check(); touchTimeout()
             let result = try await listing(client, share: nil, path: "")
             try check()
-            let data = try JSONEncoder().encode(candidate)
             try CredentialStore.save(password, for: candidate.id)
             if let old = connection {
                 do { try CredentialStore.remove(old.id) }
                 catch { try? CredentialStore.remove(candidate.id); throw error }
             }
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            try ShareSettings.save(candidate, serverID: serverID, address: serverAddress)
             connection = candidate; share = nil; path = ""; entries = result
         } catch { report(error); throw AppError.message(self.error ?? "Unable to connect.") }
     }
@@ -237,7 +262,7 @@ struct DirectFile: Identifiable {
     func forget() {
         guard !busy else { return }
         do {
-            try Self.forget(serverID: serverID)
+            try Self.forget(serverID: serverID, address: serverAddress)
             connection = nil; share = nil; path = ""; entries = []; error = nil
         } catch { report(error) }
     }
@@ -270,7 +295,7 @@ struct DirectFilesView: View {
     @State private var shareFile: DownloadedFile?
     init(server: ServerProfile) {
         self.server = server
-        _store = StateObject(wrappedValue: DirectFilesStore(serverID: server.id))
+        _store = StateObject(wrappedValue: DirectFilesStore(serverID: server.id, address: server.address))
     }
     var body: some View {
         NavigationStack {
