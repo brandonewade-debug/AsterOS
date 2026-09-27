@@ -274,6 +274,7 @@ struct AppsView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     if store.demo { Text("Demo apps • Sample data").font(.caption).foregroundStyle(.orange) }
                     if let error = store.dockerError ?? folders.error { Text(error).font(.callout).foregroundStyle(.orange) }
+                    if store.selected != nil || store.demo { ContainerHealthBanner() }
                     if items.isEmpty && store.dockerError == nil { ContentUnavailableView("No apps loaded", systemImage: "square.grid.2x2", description: Text("Connect your Unraid server to see its Docker apps here.")) }
                     LazyVGrid(columns: columns, spacing: 30) {
                         ForEach(rootIDs, id: \.self) { id in
