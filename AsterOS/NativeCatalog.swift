@@ -29,7 +29,12 @@ enum CatalogCache {
     }
     static func forget(_ id: UUID) { UserDefaults.standard.removeObject(forKey: "catalogSnapshot-" + id.uuidString) }
 }
+struct CatalogCategory: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+}
 struct NativeCatalogPage: Decodable {
+    let categories: [CatalogCategory]
     let items: [CatalogApp]
     let busy: Bool
     let ready: Bool
@@ -55,7 +60,16 @@ enum NativeCatalogBridge {
             category: text('.cardCategory'), summary: text('.cardDesc'), icon, section, note: notes};
     }).filter(Boolean).slice(0, 500);
     const enabled = selector => Array.from(document.querySelectorAll(selector)).some(el => !el.classList.contains('pageNavNoClick') && el.hasAttribute('onclick'));
-    return JSON.stringify({items, busy: typeof data !== 'undefined' && !!data.searchInProgress,
+    const categories = [];
+    const categoryIDs = new Set();
+    for (const menu of document.querySelectorAll('.categoryMenu[data-category]')) {
+        const id = menu.getAttribute('data-category');
+        if (!id || categoryIDs.has(id)) continue;
+        categoryIDs.add(id);
+        const parent = menu.closest('.subCategory')?.previousElementSibling;
+        categories.push({id, name: (parent ? clean(parent.textContent) + ' › ' : '') + clean(menu.textContent)});
+    }
+    return JSON.stringify({items, categories, busy: (typeof data !== 'undefined' && !!data.searchInProgress) || (typeof jQuery !== 'undefined' && jQuery.active > 0),
         ready: cards.length > 0 || !!document.querySelector('.ca_NoAppsFound'),
         next: enabled('.pageRight'), previous: enabled('.pageLeft')});
     """#
@@ -63,6 +77,18 @@ enum NativeCatalogBridge {
     const box = document.querySelector('#searchBox');
     if (!box || typeof doSearch !== 'function') return false;
     box.value = query; doSearch(false, query); return true;
+    """#
+    static let category = #"""
+    const matches = Array.from(document.querySelectorAll('.categoryMenu[data-category]')).filter(el => el.getAttribute('data-category') === categoryID);
+    const menu = matches.find(el => el.classList.contains('caCategoryAll')) || matches[0];
+    if (!menu || typeof clearSearchBox !== 'function' || typeof changeCategory !== 'function') return false;
+    // The server menu performs its own sort initialization and full-catalog request.
+    // Newer CA versions use an "All" child for parent categories.
+    clearSearchBox();
+    if (typeof data !== 'undefined') { data.searchFlag = false; data.committedSearchFilter = ''; }
+    document.querySelectorAll('.selectedMenu').forEach(el => el.classList.remove('selectedMenu'));
+    menu.click();
+    return true;
     """#
     static let page = #"""
     const selector = forward ? '.pageRight' : '.pageLeft';
@@ -116,9 +142,7 @@ struct NativeAppStoreView: View {
     @State private var showServer = false
     @State private var loginOnly = false
     @State private var discardEditor = false
-    @State private var category = "All"
-    private var categories: [String] { ["All"] + Array(Set(model.catalogItems.map(\.category).filter { !$0.isEmpty })).sorted() }
-    private var visible: [CatalogApp] { model.catalogItems.filter { category == "All" || $0.category == category } }
+    private var visible: [CatalogApp] { model.catalogItems }
     var body: some View {
         NavigationStack {
             ZStack {
@@ -144,8 +168,8 @@ struct NativeAppStoreView: View {
                             HStack {
                                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                                 TextField("Search Unraid apps", text: $query).disabled(!model.catalogLive).submitLabel(.search).autocorrectionDisabled().textInputAutocapitalization(.never)
-                                    .onSubmit { category = "All"; Task { await model.searchCatalog(query) } }
-                                Button { category = "All"; Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy || !model.catalogLive)
+                                    .onSubmit { Task { await model.searchCatalog(query) } }
+                                Button { Task { await model.searchCatalog(query) } } label: { Image(systemName: "arrow.right.circle.fill") }.accessibilityLabel("Search catalog").disabled(model.catalogBusy || !model.catalogLive)
                             }.padding(16).asterGlass(radius: 28)
                             if model.catalogBusy || model.loading || model.catalogRefreshing { ProgressView(model.catalogReady ? "Refreshing apps…" : "Loading apps from your server…").frame(maxWidth: .infinity) }
                             if model.catalogReady && !model.catalogLive { Text("You can browse these listings while the live catalog refreshes.").font(.caption).foregroundStyle(.secondary) }
@@ -158,10 +182,16 @@ struct NativeAppStoreView: View {
                             }
                             if model.catalogReady {
                                 HStack {
-                                    Text(query.isEmpty ? "Discover" : "Search results").font(.title2.bold())
+                                    Text(model.catalogCategory?.name ?? (query.isEmpty ? "Discover" : "Search results")).font(.title2.bold())
                                     Spacer()
-                                    if categories.count > 2 {
-                                        Menu { ForEach(categories, id: \.self) { value in Button(value) { category = value } } } label: { Label(category == "All" ? "Category" : category, systemImage: "line.3.horizontal.decrease") }.font(.caption)
+                                    if !model.catalogCategories.isEmpty {
+                                        Menu {
+                                            Button("Discover") { query = ""; model.openCatalog() }
+                                            ForEach(model.catalogCategories) { value in
+                                                Button(value.name) { query = ""; Task { await model.selectCatalogCategory(value) } }
+                                            }
+                                        } label: { Label("Category", systemImage: "line.3.horizontal.decrease") }
+                                        .font(.caption).disabled(model.catalogBusy || !model.catalogLive)
                                     }
                                 }
                                 if visible.isEmpty { ContentUnavailableView.search(text: query) }
@@ -181,18 +211,18 @@ struct NativeAppStoreView: View {
                                     }
                                 }
                                 HStack {
-                                    Button("Previous") { category = "All"; Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy || !model.catalogLive)
+                                    Button("Previous") { Task { await model.catalogPage(forward: false) } }.disabled(!model.catalogPrevious || model.catalogBusy || !model.catalogLive)
                                     Spacer()
-                                    Button("Next") { category = "All"; Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy || !model.catalogLive)
+                                    Button("Next") { Task { await model.catalogPage(forward: true) } }.disabled(!model.catalogNext || model.catalogBusy || !model.catalogLive)
                                 }.buttonStyle(.bordered).buttonBorderShape(.capsule)
-                                Text("Categories filter this page. Search queries your server’s catalog.").font(.caption2).foregroundStyle(.secondary)
+                                Text("Browse all apps in a category. Use Next to see more results.").font(.caption2).foregroundStyle(.secondary)
                             } else if !model.catalogRefreshing && !model.needsCatalogLogin && model.error != nil {
                                 Text("The live catalog is taking longer than expected. You can retry or check the server view.").font(.subheadline).foregroundStyle(.secondary)
                                 Button("Retry catalog") { model.openCatalog() }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                                 Button("Open server view") { loginOnly = false; showServer = true }.buttonStyle(.bordered).buttonBorderShape(.capsule)
                             }
                         }.padding(24).frame(maxWidth: 760).frame(maxWidth: .infinity)
-                    }.refreshable { query = ""; category = "All"; model.openCatalog() }
+                    }.refreshable { query = ""; model.openCatalog() }
                 }
             }.navigationTitle(showServer ? (model.nativeEditor != nil ? "Configure app" : "App requirements") : "Discover").navigationBarTitleDisplayMode(showServer ? .inline : .large)
                 .toolbar {
