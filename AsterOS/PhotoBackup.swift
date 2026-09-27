@@ -232,8 +232,8 @@ enum PhotoBackupPolicy {
         let destinationShare = share, destinationFolder = folder
         let destinationLayout = layout
         status = "Preparing backup…"; backgroundStatus = "Requesting background backup…"
-        execution = PhotoBackupExecution(stop: { [weak self] in
-            self?.pause(reason: "Paused by iOS or system Stop · tap Back up now to continue")
+        execution = PhotoBackupExecution(stop: { [weak self] reason in
+            self?.pause(reason: reason)
         }, report: { [weak self] in self?.backgroundStatus = $0 })
         task = Task { await backup(share: destinationShare, folder: destinationFolder, layout: destinationLayout, limit: limit, verifyExisting: verifyExisting) }
     }
@@ -380,9 +380,18 @@ enum PhotoBackupPolicy {
                     let original = try SharePolicy.name(resource.originalFilename)
                     let name = try legacy ? SharePolicy.name("\(resourceIndex)-" + original) : PhotoBackupPolicy.resourceName(date: asset.creationDate, originalName: original, identity: identity, index: resourceIndex, timeZone: timeZone)
                     let file = temporary.appendingPathComponent(UUID().uuidString)
-                    status = "Preparing \(index + 1) of \(total) from Photos…"; progress = 0
+                    let base = Double(resourceIndex) / Double(resources.count)
+                    let span = 0.99 / Double(resources.count)
+                    let exportRun = runID
+                    status = "Preparing \(index + 1) of \(total) from Photos…"; progress = base
                     watchdog?.cancel()
-                    try await PhotoResourceExport.write(resource, to: file)
+                    try await PhotoResourceExport.write(resource, to: file) { [weak self] value in
+                        Task { @MainActor in
+                            guard let self, self.runID == exportRun, self.backingUp, !self.paused else { return }
+                            self.progress = max(self.progress, base + span * 0.1 * min(1, max(0, value)))
+                        }
+                    }
+                    progress = base + span * 0.1
                     try check(); touch()
                     let size = UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
                     if let previous = sizes[name] {
@@ -398,13 +407,15 @@ enum PhotoBackupPolicy {
                                 let expected = try local.read(upToCount: remote.count) ?? Data()
                                 guard !remote.isEmpty, remote == expected else { throw AppError.message("An unfinished backup differs from the original. Choose a new backup folder.") }
                                 offset += UInt64(remote.count)
+                                progress = base + span * (0.1 + 0.9 * Double(offset) / Double(max(1, size)))
                             }
                             try local.close(); try await reader.close()
                         } catch { try? local.close(); try? await reader.close(); throw error }
                     } else {
                         status = "Backing up \(index + 1) of \(total)"
-                        try await upload(file, to: path + "/" + name, client: client, size: size)
+                        try await upload(file, to: path + "/" + name, client: client, size: size, progressBase: base + span * 0.1, progressSpan: span * 0.9)
                     }
+                    progress = base + span
                     records.append(.init(name: name, size: size))
                     try FileManager.default.removeItem(at: file)
                 }
@@ -426,7 +437,7 @@ enum PhotoBackupPolicy {
             else { status = "Backup stopped"; self.error = error.localizedDescription }
         }
     }
-    private func upload(_ file: URL, to destination: String, client: SMBClient, size: UInt64) async throws {
+    private func upload(_ file: URL, to destination: String, client: SMBClient, size: UInt64, progressBase: Double = 0, progressSpan: Double = 0) async throws {
         let parent = destination.split(separator: "/").dropLast().joined(separator: "/")
         let staging = (parent.isEmpty ? "" : parent + "/") + ".asteros-upload-" + UUID().uuidString
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
@@ -437,7 +448,7 @@ enum PhotoBackupPolicy {
             try await writer.upload(fileHandle: handle) { value in
                 Task { @MainActor [weak self] in
                     guard let self, self.runID == uploadRun, self.backingUp, !self.paused else { return }
-                    self.progress = value; self.touch()
+                    if progressSpan > 0 { self.progress = max(self.progress, progressBase + progressSpan * 0.6 * value) }; self.touch()
                 }
             }
             try await writer.close(); try check(); touch()
@@ -452,7 +463,11 @@ enum PhotoBackupPolicy {
                     try handle.read(upToCount: count) ?? Data()
                 }, readRemote: { offset, count in
                     try self.check(); self.touch()
-                    return try await reader.read(offset: offset, length: UInt32(count))
+                    let bytes = try await reader.read(offset: offset, length: UInt32(count))
+                    if progressSpan > 0 {
+                        self.progress = max(self.progress, progressBase + progressSpan * (0.6 + 0.4 * Double(offset + UInt64(bytes.count)) / Double(max(1, size))))
+                    }
+                    return bytes
                 })
                 try await reader.close()
             } catch { try? await reader.close(); throw error }

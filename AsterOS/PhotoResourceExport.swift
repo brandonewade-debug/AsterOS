@@ -17,21 +17,22 @@ final class PhotoResourceExport: @unchecked Sendable {
         }
         handle = try FileHandle(forWritingTo: file)
     }
-    static func write(_ resource: PHAssetResource, to file: URL) async throws {
+    static func write(_ resource: PHAssetResource, to file: URL, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
         let operation = try PhotoResourceExport(file: file)
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                operation.start(resource, continuation: continuation)
+                operation.start(resource, continuation: continuation, progress: progress)
             }
         } onCancel: { operation.cancel() }
     }
-    private func start(_ resource: PHAssetResource, continuation: CheckedContinuation<Void, Error>) {
+    private func start(_ resource: PHAssetResource, continuation: CheckedContinuation<Void, Error>, progress: @escaping @Sendable (Double) -> Void) {
         lock.lock()
         self.continuation = continuation
         let cancelled = cancelled
         lock.unlock()
         if cancelled { complete(CancellationError()); return }
         let options = PHAssetResourceRequestOptions(); options.isNetworkAccessAllowed = true
+        options.progressHandler = { value in progress(value) }
         let id = manager.requestData(for: resource, options: options, dataReceivedHandler: { [self] data in
             lock.lock()
             guard !finished else { lock.unlock(); return }
