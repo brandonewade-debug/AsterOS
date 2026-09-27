@@ -151,6 +151,9 @@ struct CatalogDialog {
     @Published var catalogItems: [CatalogApp] = []
     @Published var catalogCategories: [CatalogCategory] = []
     @Published var catalogCategory: CatalogCategory?
+    @Published private(set) var catalogKind: CatalogKind = .all
+    @Published private(set) var catalogFiltering = false
+    @Published private(set) var reviewingPlugin = false
     @Published var catalogReady = false
     @Published var catalogBusy = false
     @Published var catalogNext = false
@@ -192,7 +195,7 @@ struct CatalogDialog {
     }
     func openCatalog() {
         guard !applyingConfiguration else { return }
-        catalogCategory = nil
+        catalogCategory = nil; catalogKind = .all; reviewingPlugin = false
         nativeEditor = nil; configurationResult = nil
         error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = editingContainer == nil; editorOpened = false; editorAdvanced = nil
         catalogDeadline?.cancel()
@@ -315,12 +318,12 @@ struct CatalogDialog {
         }
     }
     private func readNativeCatalog() async {
-        guard onCatalog else { return }
+        guard onCatalog, !catalogFiltering else { return }
         do {
             guard let json = try await webView.callAsyncJavaScript(NativeCatalogBridge.snapshot, arguments: [:], in: nil, contentWorld: .page) as? String,
                   let bytes = json.data(using: .utf8), bytes.count < 4_000_000 else { return }
             let page = try JSONDecoder().decode(NativeCatalogPage.self, from: bytes)
-            guard !Task.isCancelled, onCatalog else { return }
+            guard !Task.isCancelled, onCatalog, !catalogFiltering else { return }
             if catalogCategories != page.categories { catalogCategories = page.categories }
             if catalogBusy != page.busy { catalogBusy = page.busy }
             if page.ready {
@@ -346,7 +349,7 @@ struct CatalogDialog {
         } catch { /* Server view remains available if the plugin markup has changed. */ }
     }
     func searchCatalog(_ query: String) async {
-        guard onCatalog, catalogLive, !catalogBusy else { return }
+        guard onCatalog, catalogLive, !catalogBusy, !catalogFiltering else { return }
         let query = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         guard !query.isEmpty else { openCatalog(); return }
         catalogCategory = nil
@@ -354,16 +357,18 @@ struct CatalogDialog {
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.search, arguments: ["query": query], in: nil, contentWorld: .page) as? Bool
             if ok != true { error = "Search is unavailable for this catalog version. Use the server view."; catalogBusy = false }
+            else { await seekCatalogKind(forward: true) }
         } catch { self.error = "Could not search the server catalog."; catalogBusy = false }
     }
     func selectCatalogCategory(_ category: CatalogCategory) async {
-        guard onCatalog, catalogLive, !catalogBusy else { return }
+        guard onCatalog, catalogLive, !catalogBusy, !catalogFiltering else { return }
         cacheable = false; catalogBusy = true; error = nil
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.category, arguments: ["categoryID": category.id], in: nil, contentWorld: .page) as? Bool
             if ok == true {
                 catalogCategory = category
                 catalogItems = []; catalogNext = false; catalogPrevious = false
+                await seekCatalogKind(forward: true)
             } else {
                 error = "This category is unavailable for this catalog version. Try the server view."
                 catalogBusy = false
@@ -373,14 +378,38 @@ struct CatalogDialog {
             catalogBusy = false
         }
     }
+    func selectCatalogKind(_ kind: CatalogKind, query: String) async {
+        guard onCatalog, catalogLive, !catalogBusy, !catalogFiltering else { return }
+        catalogKind = kind; cacheable = false
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await searchCatalog(query)
+        } else {
+            let category = catalogCategory ?? catalogCategories.first { $0.id == "All" }
+            guard let category else { error = "Open All Apps in the server view to browse by type."; return }
+            await selectCatalogCategory(category)
+        }
+    }
+    private func seekCatalogKind(forward: Bool) async {
+        guard catalogKind != .all else { return }
+        catalogFiltering = true
+        defer { catalogFiltering = false }
+        do {
+            let result = try await webView.callAsyncJavaScript(NativeCatalogBridge.seekKind, arguments: ["kind": catalogKind.rawValue, "forward": forward], in: nil, contentWorld: .page) as? String
+            if result == "unavailable" { error = "The catalog could not advance. Try the server view." }
+        } catch { self.error = "Could not finish filtering the catalog. Try Next or refresh." }
+    }
     func catalogPage(forward: Bool) async {
-        guard onCatalog, catalogLive, !catalogBusy else { return }
+        guard onCatalog, catalogLive, !catalogBusy, !catalogFiltering else { return }
         cacheable = false
-        do { _ = try await webView.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": forward], in: nil, contentWorld: .page) }
+        do {
+            _ = try await webView.callAsyncJavaScript(NativeCatalogBridge.page, arguments: ["forward": forward], in: nil, contentWorld: .page)
+            await seekCatalogKind(forward: forward)
+        }
         catch { self.error = "Could not load the next catalog page." }
     }
     func reviewCatalogApp(_ app: CatalogApp) async {
         guard onCatalog, catalogLive, !catalogBusy else { error = "Wait for the live catalog before reviewing installation."; return }
+        reviewingPlugin = app.isPlugin
         do {
             let ok = try await webView.callAsyncJavaScript(NativeCatalogBridge.review, arguments: ["appID": app.id], in: nil, contentWorld: .page) as? Bool
             if ok != true { error = "This catalog entry changed. Search for it in the server view." }
@@ -459,13 +488,13 @@ struct UnraidAppStoreView: View {
             HStack(spacing: 16) {
                 Button { model.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!model.canGoBack).accessibilityLabel("Back in App Store")
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.editingContainer == nil ? "Community Applications" : "Container configuration").font(.subheadline.bold())
+                    Text(model.reviewingPlugin ? "Plugin installer" : model.editingContainer == nil ? "Community Applications" : "Container configuration").font(.subheadline.bold())
                     Text(model.host.isEmpty ? server.name : model.host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
                 Button { model.openCatalog() } label: { Image(systemName: "house") }.accessibilityLabel(model.editingContainer == nil ? "Open app catalog" : "Reopen container editor")
             }.padding(.horizontal, 20).padding(.vertical, 10)
-            Text(model.editingContainer == nil ? "Review the template settings before pressing Apply to install. Advanced mode shows additional Docker options." : "Edit your saved template, then press Apply on the server form. Applying changes may recreate or restart this container.")
+            Text(model.reviewingPlugin ? "Review requirements, then choose Install. Keep this screen open for Unraid’s progress and result. Follow any restart instructions before using the plugin." : model.editingContainer == nil ? "Review the template settings before pressing Apply to install. Advanced mode shows additional Docker options." : "Edit your saved template, then press Apply on the server form. Applying changes may recreate or restart this container.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
             if let advanced = model.editorAdvanced {
                 Toggle("Advanced mode", isOn: Binding(get: { model.editorAdvanced ?? advanced }, set: { value in Task { await model.setEditorAdvanced(value) } }))
