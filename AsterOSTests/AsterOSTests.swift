@@ -3,6 +3,52 @@ import WebKit
 @testable import AsterOS
 
 final class AsterOSTests: XCTestCase {
+    @MainActor func testCustomIconsPersistNormalizeAndStayScoped() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = URL(string: "https://SERVER.example:443")!
+        let canonical = URL(string: "https://server.example")!
+        let store = CustomIconsStore(directory: root)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 900, height: 450)).image { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 900, height: 450))
+        }
+        let decoded = try CustomIconsStore.decode(image.pngData()!)
+        XCTAssertLessThanOrEqual(max(decoded.size.width, decoded.size.height), 512)
+        try store.save(decoded, fill: false, app: "container:plex", server: server)
+        let reloaded = CustomIconsStore(directory: root)
+        XCTAssertEqual(reloaded.image(app: "container:plex", server: canonical)?.size, CGSize(width: 512, height: 512))
+        XCTAssertNil(reloaded.image(app: "container:other", server: canonical))
+        XCTAssertNil(reloaded.image(app: "container:plex", server: URL(string: "https://other.example")!))
+        XCTAssertThrowsError(try CustomIconsStore.decode(Data("not an image".utf8)))
+        XCTAssertThrowsError(try CustomIconsStore.decode(Data(count: 20_000_001)))
+        XCTAssertNotNil(reloaded.image(app: "container:plex", server: canonical))
+        try reloaded.remove(app: "container:plex", server: canonical)
+        XCTAssertNil(CustomIconsStore(directory: root).image(app: "container:plex", server: server))
+    }
+    @MainActor func testAppOrderMigratesAndPersistsWithFolders() throws {
+        let legacy = Data(#"{"folders":[]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(AppFolderLayout.self, from: legacy).order, [])
+        let suite = "order-tests-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let address = URL(string: "https://order.example")!
+        let store = AppFoldersStore(defaults: defaults)
+        store.load(serverID: UUID(), address: address)
+        store.reorder("container:b", over: "catalog", visible: ["catalog", "container:a", "container:b"])
+        let folder = store.create("Media", app: "container:a")!
+        store.move("container:b", to: folder)
+        store.reorder("container:b", over: "container:a", visible: ["container:a", "container:b"], folder: folder)
+        let reloaded = AppFoldersStore(defaults: defaults)
+        reloaded.load(serverID: UUID(), address: address)
+        XCTAssertEqual(reloaded.layout.order, ["container:b", "catalog", "container:a"])
+        XCTAssertEqual(reloaded.layout.ordered(["container:a", "container:b"], folder: folder), ["container:b", "container:a"])
+        reloaded.reorder("catalog", over: "container:a", visible: ["catalog", "container:a"], folder: folder)
+        XCTAssertEqual(reloaded.layout.folders[0].members, ["container:b", "container:a"], "Dragging cannot add foreign items to a folder")
+        XCTAssertEqual(reloaded.layout.ordered(["catalog", "container:b", "container:new"]), ["container:b", "catalog", "container:new"])
+        reloaded.load(serverID: UUID(), address: URL(string: "https://other.example")!)
+        XCTAssertTrue(reloaded.layout.order.isEmpty)
+    }
+
     @MainActor func testCatalogCacheAppearsBeforeNetworkButCannotInstall() throws {
         let id = UUID(), server = URL(string: "https://cache-test.example:4443")!
         defer { CatalogCache.forget(id) }
