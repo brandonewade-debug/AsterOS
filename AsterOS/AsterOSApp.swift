@@ -25,20 +25,32 @@ struct RootView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var setup = false
+    @StateObject private var sample = DemoWorkspace()
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab("Server", systemImage: "server.rack", value: AppTab.server) { DashboardView() }
-            Tab("Files", systemImage: "folder", value: AppTab.files) { FilesView() }
-            Tab("Photos", systemImage: "photo", value: AppTab.photos) { PhotosView() }
-            Tab("Apps", systemImage: "square.grid.2x2", value: AppTab.apps) { AppsView() }
-            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) { SettingsView() }
+            Tab("Files", systemImage: "folder", value: AppTab.files) { if store.demo { DemoFilesView() } else { FilesView() } }
+            Tab("Photos", systemImage: "photo", value: AppTab.photos) { if store.demo { DemoPhotosView() } else { PhotosView() } }
+            Tab("Apps", systemImage: "square.grid.2x2", value: AppTab.apps) { if store.demo { DemoAppsView() } else { AppsView() } }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) { if store.demo { DemoSettingsView() } else { SettingsView() } }
         }
+        .environmentObject(sample)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.demo {
+                HStack {
+                    Label("Demo · Sample data", systemImage: "sparkles").font(.caption.bold())
+                    Spacer()
+                    Button("Exit demo") { store.exitDemo(); if store.selected == nil { setup = true } }.font(.caption.bold())
+                }.padding(.horizontal, 20).padding(.vertical, 8).background(.ultraThinMaterial)
+            } else { ConnectionProgressView() }
+        }
+        .onChange(of: store.demo) { _, demo in if demo { sample.reset(); selectedTab = .server } }
         .preferredColorScheme(.dark)
-        .task(id: scenePhase) { if scenePhase == .active { await vpn.foreground() } }
+        .task(id: "\(scenePhase)-\(store.demo)") { if scenePhase == .active && !store.demo { await vpn.foreground() } }
         .sheet(isPresented: $setup) { ConnectionView() }
         .onAppear { if store.selected == nil && !store.demo { setup = true } }
-        .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)-\(vpn.running)") {
-            guard scenePhase == .active else { return }
+        .task(id: "\(store.selectedID?.uuidString ?? "none")-\(scenePhase)-\(vpn.running)-\(store.demo)") {
+            guard scenePhase == .active, !store.demo else { return }
             if let server = store.selected, TailnetPolicy.contains(server.address.host ?? ""), !vpn.running { return }
             while !Task.isCancelled {
                 // A cancelled previous foreground refresh may still be unwinding.
@@ -292,7 +304,7 @@ struct SettingsView: View {
                 Section("Support") { NavigationLink { SupportReportView() } label: { Label("Support report", systemImage: "doc.text.magnifyingglass") } }
                 Section("Preview build") {
                     Text("AsterOS by Asterline Labs").font(.headline)
-                    Text("0.1.0 • Preview")
+                    Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") • Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")")
                     Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes Discover for Unraid apps and container removal. Includes server terminal access. Optional PIN and biometric app lock are available. Unread server alerts and searchable Docker logs require compatible API permissions and server versions. Photo backup runs while this app is open; background push alerts are not included.").foregroundStyle(.secondary)
                 }
                 Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. Your Unraid web sign-in is remembered on this device for server tools. Saved server session cookies are protected in Keychain. External app websites use their own browser sessions.") }
