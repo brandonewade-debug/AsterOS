@@ -236,6 +236,7 @@ struct ContainerDetailsView: View {
     @Environment(\.dismiss) private var dismiss
     let container: Container
     @State private var editing = false
+    @State private var editor: ContainerEditorTarget?
     var body: some View {
         NavigationStack {
             GlassForm {
@@ -250,6 +251,9 @@ struct ContainerDetailsView: View {
                     Text(container.status).font(.callout)
                 }
                 Section {
+                    Button("Edit container configuration", systemImage: "slider.horizontal.3") {
+                        if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) }
+                    }.disabled(store.demo || store.operating)
                     if let configured = container.webAddress(server: store.selected?.address) {
                         LabeledContent("Unraid WebUI") { Text(configured.absoluteString).font(.caption).textSelection(.enabled) }
                         Text("Tapping the app opens its configured Unraid WebUI unless you set an external URL override.").font(.caption).foregroundStyle(.secondary)
@@ -265,6 +269,7 @@ struct ContainerDetailsView: View {
                 }
             }.navigationTitle("App details").navigationBarTitleDisplayMode(.inline)
                 .toolbar { Button("Done") { dismiss() } }
+                .fullScreenCover(item: $editor, onDismiss: { Task { await store.refresh() } }) { ContainerEditorView(target: $0) }
                 .sheet(isPresented: $editing) { AddAppView(initialName: container.name, containerID: container.id) }
         }
     }

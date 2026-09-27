@@ -2,6 +2,48 @@ import SwiftUI
 import WebKit
 import Combine
 
+struct ContainerEditorTarget: Identifiable {
+    let container: Container
+    let server: ServerProfile
+    var id: String { server.id.uuidString + ":" + container.id }
+}
+enum ContainerEditorBridge {
+    // Use Unraid's own edit action to resolve the saved template, including custom names.
+    static let open = #"""
+    const entry = Array.from(document.querySelectorAll('a.exec[onclick]')).find(el =>
+        (el.getAttribute('onclick') || '').trim().startsWith('editContainer(') && el.textContent.trim() === containerName);
+    if (!entry) return false;
+    entry.click(); return true;
+    """#
+    static let state = #"""
+    const toggle = document.querySelector('input.advancedview[type="checkbox"]');
+    return document.querySelector('#formTemplate') && toggle ? {advanced: toggle.checked} : null;
+    """#
+    static let setAdvanced = #"""
+    const toggle = document.querySelector('input.advancedview[type="checkbox"]');
+    if (!document.querySelector('#formTemplate') || !toggle || toggle.disabled) return false;
+    if (toggle.checked !== advanced) toggle.click();
+    return toggle.checked === advanced;
+    """#
+}
+struct ContainerEditorView: View {
+    let target: ContainerEditorTarget
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model: CatalogBrowserModel
+    init(target: ContainerEditorTarget) {
+        self.target = target
+        _model = StateObject(wrappedValue: CatalogBrowserModel(server: target.server.address, serverID: target.server.id, editingContainer: target.container.name))
+    }
+    var body: some View {
+        NavigationStack {
+            UnraidAppStoreView(server: target.server, model: model)
+                .navigationTitle("Edit " + target.container.name).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+                .onAppear { model.resumeCatalog() }
+                .onDisappear { model.stopCatalogObservation(); model.stop() }
+        }
+    }
+}
 struct ContainerRemovalTarget: Identifiable {
     let container: Container
     let serverID: UUID
@@ -78,6 +120,11 @@ struct CatalogDialog {
 @MainActor final class CatalogBrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     let catalog: URL
+    let editingContainer: String?
+    var startPage: URL { editingContainer == nil ? catalog : catalog.deletingLastPathComponent().appendingPathComponent("Docker") }
+    @Published private(set) var editorAdvanced: Bool?
+    @Published private(set) var changingEditorMode = false
+    private var editorOpened = false
     private let serverID: UUID
     private var cacheable = true
     private var lastCachedItems: [CatalogApp]?
@@ -102,7 +149,8 @@ struct CatalogDialog {
     private var sawLogin = false
     private var timeout: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
-    init(server: URL, serverID: UUID) {
+    init(server: URL, serverID: UUID, editingContainer: String? = nil) {
+        self.editingContainer = editingContainer
         self.serverID = serverID
         catalog = CatalogPolicy.url(server: server)
         let config = WKWebViewConfiguration()
@@ -111,7 +159,7 @@ struct CatalogDialog {
         session = ServerWebSession(serverID: serverID, server: server, dataStore: config.websiteDataStore)
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 780), configuration: config)
         super.init()
-        if let saved = CatalogCache.load(serverID: serverID, address: catalog) {
+        if editingContainer == nil, let saved = CatalogCache.load(serverID: serverID, address: catalog) {
             catalogItems = saved.items; lastCachedItems = saved.items; catalogReady = true
         }
         session.onError = { [weak self] message in self?.error = message }
@@ -126,13 +174,13 @@ struct CatalogDialog {
         startCatalogObservation()
     }
     func openCatalog() {
-        error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = true
+        error = nil; loading = true; catalogLive = false; catalogRefreshing = true; needsCatalogLogin = false; cacheable = editingContainer == nil; editorOpened = false; editorAdvanced = nil
         catalogDeadline?.cancel()
         catalogDeadline = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
             guard let self, !catalogLive else { return }
             catalogRefreshing = false
-            error = "Your server is still preparing Community Applications. Retry or check the server view."
+            error = editingContainer == nil ? "Your server is still preparing Community Applications. Retry or check the server view." : "The saved container template could not be opened yet. Check the server page; containers created outside Unraid may not have an editable template."
         }
         connectionTask?.cancel()
         let revision = UUID(); connectionRevision = revision
@@ -144,7 +192,7 @@ struct CatalogDialog {
                 let proxies = try await TailnetStore.shared.prepare(for: catalog.host)
                 try Task.checkCancellation()
                 webView.configuration.websiteDataStore.proxyConfigurations = proxies
-                webView.load(URLRequest(url: catalog))
+                webView.load(URLRequest(url: startPage))
             } catch is CancellationError { return }
             catch { self.error = error.localizedDescription; self.loading = false; self.catalogRefreshing = false; self.catalogDeadline?.cancel() }
         }
@@ -157,12 +205,47 @@ struct CatalogDialog {
         guard catalogObservation == nil else { return }
         catalogObservation = Task { [weak self] in
             while !Task.isCancelled {
+                await self?.readEditorState()
                 await self?.readNativeCatalog()
                 do { try await Task.sleep(for: .milliseconds(self?.catalogLive == true ? 1500 : 300)) } catch { break }
             }
         }
     }
     func stopCatalogObservation() { catalogObservation?.cancel(); catalogObservation = nil }
+    private var onEditor: Bool {
+        guard let url = webView.url, CatalogPolicy.sameOrigin(url, catalog) else { return false }
+        let base = catalog.deletingLastPathComponent()
+        return ["Docker/AddContainer", "Docker/UpdateContainer", "Apps/AddContainer", "Apps/UpdateContainer"].contains { base.appendingPathComponent($0).path == url.path }
+    }
+    private func readEditorState() async {
+        guard let url = webView.url, CatalogPolicy.sameOrigin(url, catalog) else { editorAdvanced = nil; return }
+        if onEditor {
+            do {
+                let state = try await webView.callAsyncJavaScript(ContainerEditorBridge.state, arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+                guard !Task.isCancelled, onEditor else { return }
+                editorAdvanced = state?["advanced"] as? Bool
+                if editorAdvanced != nil { catalogDeadline?.cancel(); catalogRefreshing = false }
+            } catch { editorAdvanced = nil }
+        } else {
+            editorAdvanced = nil
+            if let editingContainer, !editorOpened, url.path == startPage.path {
+                do {
+                    let opened = try await webView.callAsyncJavaScript(ContainerEditorBridge.open, arguments: ["containerName": editingContainer], in: nil, contentWorld: .page) as? Bool
+                    if opened == true { editorOpened = true }
+                } catch { /* Keep the server's own Docker page usable. */ }
+            }
+        }
+    }
+    func setEditorAdvanced(_ advanced: Bool) async {
+        guard onEditor, editorAdvanced != nil, !changingEditorMode else { return }
+        changingEditorMode = true
+        defer { changingEditorMode = false }
+        do {
+            let changed = try await webView.callAsyncJavaScript(ContainerEditorBridge.setAdvanced, arguments: ["advanced": advanced], in: nil, contentWorld: .page) as? Bool
+            if changed == true { editorAdvanced = advanced }
+            else { error = "Use the server's Basic/Advanced View switch for this editor version." }
+        } catch { self.error = "Could not change the editor view. Your form has not been submitted." }
+    }
     private func readNativeCatalog() async {
         guard onCatalog else { return }
         do {
@@ -236,9 +319,9 @@ struct CatalogDialog {
         timeout?.cancel(); loading = false; canGoBack = webView.canGoBack
         guard let url = webView.url else { return }
         host = url.host ?? ""
-        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; needsCatalogLogin = true; catalogLive = false; catalogRefreshing = false; catalogDeadline?.cancel() }
+        if CatalogPolicy.sameOrigin(url, catalog), url.lastPathComponent.lowercased() == "login" { sawLogin = true; editorOpened = false; needsCatalogLogin = true; catalogLive = false; catalogRefreshing = false; catalogDeadline?.cancel() }
         if CatalogPolicy.returnAfterLogin(url, catalog: catalog, sawLogin: sawLogin) {
-            sawLogin = false; webView.load(URLRequest(url: catalog))
+            sawLogin = false; webView.load(URLRequest(url: startPage))
         }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
@@ -271,15 +354,19 @@ struct UnraidAppStoreView: View {
             HStack(spacing: 16) {
                 Button { model.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!model.canGoBack).accessibilityLabel("Back in App Store")
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Community Applications").font(.subheadline.bold())
+                    Text(model.editingContainer == nil ? "Community Applications" : "Container configuration").font(.subheadline.bold())
                     Text(model.host.isEmpty ? server.name : model.host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                Button { model.openCatalog() } label: { Image(systemName: "house") }.accessibilityLabel("Open app catalog")
+                Button { model.openCatalog() } label: { Image(systemName: "house") }.accessibilityLabel(model.editingContainer == nil ? "Open app catalog" : "Reopen container editor")
             }.padding(.horizontal, 20).padding(.vertical, 10)
-            Text("Sign in to your server if prompted, then choose an app and review its installation settings. When finished, close the App Store to refresh your apps.")
+            Text(model.editingContainer == nil ? "Review the template settings before pressing Apply to install. Advanced mode shows additional Docker options." : "Edit your saved template, then press Apply on the server form. Applying changes may recreate or restart this container.")
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
-            if model.loading { ProgressView().frame(maxWidth: .infinity) }
+            if let advanced = model.editorAdvanced {
+                Toggle("Advanced mode", isOn: Binding(get: { model.editorAdvanced ?? advanced }, set: { value in Task { await model.setEditorAdvanced(value) } }))
+                    .disabled(model.changingEditorMode).padding(.horizontal, 20)
+            }
+            if model.loading || (model.editingContainer != nil && model.editorAdvanced == nil && !model.needsCatalogLogin && model.error == nil) { ProgressView("Opening configuration…").frame(maxWidth: .infinity) }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal, 20) }
             CatalogSurface(model: model).clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous)).padding(.horizontal, 8)
         }.background { AsterBackdrop() }
