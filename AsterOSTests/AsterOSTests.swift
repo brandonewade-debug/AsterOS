@@ -320,6 +320,46 @@ final class AsterOSTests: XCTestCase {
         XCTAssertFalse(CatalogPolicy.returnAfterLogin(URL(string: "https://tower.example.ts.net:4443/Main")!, catalog: catalog, sawLogin: false))
     }
 
+    @MainActor func testContainerEditorUsesSavedTemplateAndAdvancedToggleDoesNotSubmit() async throws {
+        let loaded = expectation(description: "Editor fixture loaded")
+        let delegate = CatalogFixtureLoader(loaded)
+        let web = WKWebView(frame: .zero)
+        web.navigationDelegate = delegate
+        web.loadHTMLString(#"""
+        <a class="exec" onclick="editContainer('Plex','custom-template.xml')">Plex</a>
+        <a class="exec" onclick="editContainer('Other','other.xml')">Other</a>
+        <form id="formTemplate" onsubmit="window.submitted=true;return false"><input name="port" value="32400"><input type="password" value="never-export"></form>
+        <input type="checkbox" class="advancedview" onchange="window.advancedChanged=this.checked">
+        <script>window.submitted=false;window.opened='';function editContainer(name,template){window.opened=template;}</script>
+        """#, baseURL: URL(string: "https://server.invalid/Docker/UpdateContainer"))
+        await fulfillment(of: [loaded], timeout: 10)
+        let opened = try await web.callAsyncJavaScript(ContainerEditorBridge.open, arguments: ["containerName": "Plex"], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(opened, true)
+        let template = try await web.evaluateJavaScript("window.opened") as? String
+        XCTAssertEqual(template, "custom-template.xml")
+        let missing = try await web.callAsyncJavaScript(ContainerEditorBridge.open, arguments: ["containerName": "Missing'; window.submitted=true;//"], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(missing, false)
+        for desired in [true, true, false] {
+            let changed = try await web.callAsyncJavaScript(ContainerEditorBridge.setAdvanced, arguments: ["advanced": desired], in: nil, contentWorld: .page) as? Bool
+            XCTAssertEqual(changed, true)
+            let state = try await web.callAsyncJavaScript(ContainerEditorBridge.state, arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+            XCTAssertEqual(state?["advanced"] as? Bool, desired)
+            XCTAssertEqual(state?.count, 1, "Never export form values or credentials")
+            let event = try await web.evaluateJavaScript("window.advancedChanged") as? Bool
+            XCTAssertEqual(event, desired)
+        }
+        let submitted = try await web.evaluateJavaScript("window.submitted") as? Bool
+        let port = try await web.evaluateJavaScript("document.querySelector('[name=port]').value") as? String
+        XCTAssertEqual(submitted, false); XCTAssertEqual(port, "32400")
+        web.navigationDelegate = nil
+    }
+    @MainActor func testContainerEditorStartsAtDockerForTemplateDiscovery() {
+        let model = CatalogBrowserModel(server: URL(string: "https://server.example:4443/base/graphql")!, serverID: UUID(), editingContainer: "Plex")
+        XCTAssertEqual(model.startPage.absoluteString, "https://server.example:4443/base/Docker")
+        XCTAssertNil(model.webView.url)
+        XCTAssertNil(model.editorAdvanced)
+    }
+
     @MainActor func testNativeCatalogReadsDockerCardsWithoutLoginDataOrInstalling() async throws {
         let loaded = expectation(description: "Catalog fixture loaded")
         let delegate = CatalogFixtureLoader(loaded)

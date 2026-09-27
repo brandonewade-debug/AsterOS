@@ -102,6 +102,7 @@ struct AppsView: View {
     @State private var catalogPresentation: CatalogPresentation?
     @State private var catalogServerID: UUID?
     @State private var removal: ContainerRemovalTarget?
+    @State private var editor: ContainerEditorTarget?
     @State private var catalogModel: CatalogBrowserModel?
     @State private var opened: SavedApp?
     @State private var pending: Container?
@@ -166,6 +167,7 @@ struct AppsView: View {
             }.disabled(store.demo || store.selected == nil)
             if let container = item.container {
                 Button("App details", systemImage: "info.circle") { details = container }
+                Button("Edit container", systemImage: "slider.horizontal.3") { if let server = store.selected { editor = ContainerEditorTarget(container: container, server: server) } }.disabled(store.demo || store.operating)
                 Button("Remove container", systemImage: "trash", role: .destructive) { if let serverID = store.selectedID { removal = ContainerRemovalTarget(container: container, serverID: serverID) } }.disabled(store.demo || store.operating)
                 if container.state == "RUNNING" || container.state == "EXITED" {
                     Button(container.state == "RUNNING" ? "Stop container" : "Start container", systemImage: container.state == "RUNNING" ? "stop.circle" : "play.circle") { pending = container }.disabled(store.demo || store.operating)
@@ -247,6 +249,7 @@ struct AppsView: View {
                 }
             }
             .fullScreenCover(item: $opened) { AppBrowser(app: $0) }
+            .fullScreenCover(item: $editor, onDismiss: { Task { await store.refresh() } }) { ContainerEditorView(target: $0) }
             .alert(editingFolder == nil ? "New app folder" : "Rename folder", isPresented: $folderPrompt) {
                 TextField("Folder name", text: $folderName)
                 Button("Save") {
