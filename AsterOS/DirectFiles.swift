@@ -128,6 +128,7 @@ struct DirectFile: Identifiable {
     }
     func cancel() { cancelled = true; activeClient?.session.disconnect() }
     private func login(_ client: SMBClient, connection: ShareConnection) async throws {
+        try TailnetStore.shared.requirePrivateFileRoute(host: connection.host)
         let password = try CredentialStore.read(connection.id)
         try await client.login(username: connection.username, password: password, requireSigning: true)
         try check(); touchTimeout()
@@ -152,6 +153,7 @@ struct DirectFile: Identifiable {
             throw AppError.message("Use an Unraid share username and password. The root account cannot access SMB shares.")
         }
         let candidate = ShareConnection(host: try SharePolicy.host(host), username: username)
+        try TailnetStore.shared.requirePrivateFileRoute(host: candidate.host)
         let client = begin(candidate); defer { finish(client) }
         do {
             try await client.login(username: username, password: password, requireSigning: true)
@@ -411,7 +413,7 @@ struct ShareConnectionView: View {
                         catch { self.error = error.localizedDescription }
                     }
                 }.disabled(store.busy || host.isEmpty || username.isEmpty || password.isEmpty)
-                Section { Text("Use a trusted local network or VPN. Do not forward SMB port 445 to the internet. No additional server app is required.").font(.caption).foregroundStyle(.secondary) }
+                Section { Text("File access requires Tailscale connected inside AsterOS and your server’s full .ts.net name or Tailscale IP. This protects transfers because the current SMB client does not provide encryption. LAN-only share addresses are blocked. No AsterOS companion is required.").font(.caption).foregroundStyle(.secondary) }
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()
             .navigationTitle("Connect shares")

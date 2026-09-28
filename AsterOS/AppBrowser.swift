@@ -5,6 +5,7 @@ import Combine
 @MainActor final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     private var routeObserver: AnyCancellable?
+    private let privateHost: String?
     @Published var title = ""
     @Published var host = ""
     @Published var back = false
@@ -12,13 +13,16 @@ import Combine
     @Published var loading = false
     @Published var error: String?
     init(url: URL) {
+        privateHost = url.host.flatMap { TailnetPolicy.contains($0) ? $0 : nil }
         let config = WKWebViewConfiguration()
+        // Private pages use an all-request Tailscale proxy; public pages require HTTPS.
         // Separate ephemeral website session per launch; no API authentication headers.
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         routeObserver = TailnetStore.shared.$revision.dropFirst().sink { [weak self] _ in
-            self?.webView.configuration.websiteDataStore.proxyConfigurations = TailnetStore.shared.proxies
+            guard let self else { return }
+            self.webView.configuration.websiteDataStore.proxyConfigurations = self.privateHost == nil ? TailnetStore.shared.proxies : TailnetStore.shared.privateBrowserProxies
         }
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -26,10 +30,24 @@ import Combine
             guard let self else { return }
             do {
                 let proxies = try await TailnetStore.shared.prepare(for: url.host)
-                self.webView.configuration.websiteDataStore.proxyConfigurations = proxies
+                guard permits(url) else {
+                    throw AppError.message("This app uses unencrypted HTTP. Use HTTPS or a known Tailscale peer address with AsterOS connected.")
+                }
+                self.webView.configuration.websiteDataStore.proxyConfigurations = privateHost == nil ? proxies : TailnetStore.shared.privateBrowserProxies
+                let rules = try PrivateTransportPolicy.webRules(privateHost: privateHost)
+                let ruleID = "AsterOS-private-resources-" + UUID().uuidString
+                let list = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: ruleID, encodedContentRuleList: rules)
+                guard let list else { throw AppError.message("Secure browsing protections could not load. Please retry.") }
+                self.webView.configuration.userContentController.add(list)
+                try await WKContentRuleListStore.default().removeContentRuleList(forIdentifier: ruleID)
                 self.webView.load(URLRequest(url: url))
             } catch { self.error = error.localizedDescription; self.loading = false }
         }
+    }
+    private func permits(_ url: URL) -> Bool {
+        PrivateTransportPolicy.permitsWeb(url,
+            connected: privateHost.map { TailnetStore.shared.isKnownPeer($0) } ?? false,
+            privateHost: privateHost)
     }
     private func sync() {
         title = webView.title ?? "App"
@@ -42,11 +60,11 @@ import Combine
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription; loading = false; sync() }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        if AppWebPolicy.allows(url) || url.absoluteString == "about:blank" { decisionHandler(.allow) }
-        else { error = "This app link is not a supported HTTP or HTTPS address."; decisionHandler(.cancel) }
+        if permits(url) || url.absoluteString == "about:blank" { decisionHandler(.allow) }
+        else { error = "This navigation was blocked. Use HTTPS or this app’s protected Tailscale address."; decisionHandler(.cancel) }
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, AppWebPolicy.allows(url) { webView.load(navigationAction.request) }
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, permits(url) { webView.load(navigationAction.request) }
         return nil
     }
 }
@@ -76,7 +94,7 @@ struct AppBrowser: View {
                         Button { model.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!model.back).accessibilityLabel("Back")
                         Button { model.webView.goForward() } label: { Image(systemName: "chevron.right") }.disabled(!model.forward).accessibilityLabel("Forward")
                         Text(model.host).font(.caption).lineLimit(1).frame(maxWidth: .infinity)
-                        Button { openURL(model.webView.url ?? app.url) } label: { Image(systemName: "safari") }.accessibilityLabel("Open in Safari")
+                        Button { openURL(model.webView.url ?? app.url) } label: { Image(systemName: "safari") }.accessibilityLabel("Open in Safari").disabled((model.webView.url ?? app.url).scheme?.lowercased() != "https")
                         Button { model.webView.reload() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("Reload")
                     }
                 }.padding(20).asterGlass(radius: 36).padding(12)

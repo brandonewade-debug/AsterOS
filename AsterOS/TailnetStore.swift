@@ -5,10 +5,11 @@ import TailscaleKit
 
 struct TailnetPeer: Decodable, Identifiable {
     let peerID: String?
-    enum CodingKeys: String, CodingKey { case peerID = "ID", HostName, DNSName, Online }
+    enum CodingKeys: String, CodingKey { case peerID = "ID", HostName, DNSName, Online, TailscaleIPs }
     let HostName: String?
     let DNSName: String?
     let Online: Bool?
+    let TailscaleIPs: [String]?
     var id: String { peerID ?? DNSName ?? HostName ?? "" }
     var host: String { (DNSName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
 }
@@ -223,10 +224,28 @@ private struct SilentTailnetLogger: LogSink {
         guard running else { throw AppError.message("Open Private connection and finish Tailscale sign-in or device approval first.") }
         return proxies
     }
+    func requirePrivateFileRoute(host: String) throws {
+        guard PrivateTransportPolicy.permitsFiles(host: host, connected: enabled && running && loopback != nil && isKnownPeer(host)) else {
+            throw AppError.message("For encrypted file transfers, connect Tailscale in AsterOS and use your server’s full .ts.net name or Tailscale IP in Files → Connect shares. LAN-only SMB is disabled because this client does not provide SMB encryption.")
+        }
+    }
+    func isKnownPeer(_ host: String) -> Bool {
+        let normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]."))
+        return enabled && running && peers.contains {
+            $0.host.lowercased() == normalized || ($0.TailscaleIPs ?? []).contains(normalized)
+        }
+    }
+    // An unscoped proxy is intentional for a private browser: no request may escape it.
+    var privateBrowserProxies: [ProxyConfiguration] {
+        if enabled, running, let loopback { return [makeProxy(loopback, scoped: false)] }
+        return [ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: 1))]
+    }
     func smbParameters() -> NWParameters {
         let parameters = NWParameters.tcp
         let privacy = NWParameters.PrivacyContext(description: "AsterOS private shares")
-        privacy.proxyConfigurations = proxies
+        // This per-client proxy covers every SMB connection. Never fall back to direct TCP.
+        if enabled, running, let loopback { privacy.proxyConfigurations = [makeProxy(loopback, scoped: false)] }
+        else { privacy.proxyConfigurations = [ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: 1))] }
         parameters.setPrivacyContext(privacy)
         return parameters
     }

@@ -5,6 +5,10 @@ import SwiftUI
     @StateObject private var lock = AppLockStore()
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vpn = TailnetStore.shared
+    init() {
+        do { try PrivateTemporaryFiles.removeAbandoned(); UserDefaults.standard.removeObject(forKey: "temporaryCleanupFailed") }
+        catch { UserDefaults.standard.set(true, forKey: "temporaryCleanupFailed") }
+    }
     var body: some Scene { WindowGroup { RootView().environmentObject(store).environmentObject(vpn).environmentObject(lock).tint(.mint).opacity(lock.locked || lock.shield ? 0 : 1).accessibilityHidden(lock.locked || lock.shield).background(AppSecurityWindow(lock: lock)).onChange(of: scenePhase, initial: true) { _, phase in lock.sceneChanged(phase); store.photoBackupSceneChanged(phase) } } }
 }
 enum DockTheme {
@@ -164,6 +168,7 @@ struct ContainerIcon: View {
         guard let server else { return nil }
         return customIcons.image(app: "container:" + container.name.lowercased(), server: server)
     }
+    @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
     @ObservedObject private var tailnet = TailnetStore.shared
     var body: some View {
         Group {
@@ -179,9 +184,9 @@ struct ContainerIcon: View {
                 Circle().fill(container.state == "RUNNING" ? Color.green : Color.secondary)
                     .frame(width: 10, height: 10).overlay(Circle().stroke(DockTheme.background, lineWidth: 2)).offset(x: 2, y: 2)
             }
-            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)-\(customImage != nil)") {
+            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)-\(customImage != nil)-\(allowRemoteIcons)") {
                 loadedImage = nil
-                guard customImage == nil, let url = container.iconAddress(server: server) else { return }
+                guard customImage == nil, let url = container.iconAddress(server: server), allowRemoteIcons || server.map { CatalogPolicy.sameOrigin(url, $0) } == true else { return }
                 do {
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForResource = 15
@@ -273,6 +278,8 @@ struct PlannedView: View {
     }
 }
 struct SettingsView: View {
+    @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
+    @AppStorage("temporaryCleanupFailed") private var temporaryCleanupFailed = false
     @State private var renewing: ServerProfile?
     @EnvironmentObject var store: AppStore
     @State private var adding = false
@@ -307,7 +314,12 @@ struct SettingsView: View {
                     Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") • Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")")
                     Text("Includes private connectivity, server monitoring, Docker controls, direct files and resumable photo backup. Includes Discover for Unraid apps and container removal. Includes server terminal access. Optional PIN and biometric app lock are available. Unread server alerts and searchable Docker logs require compatible API permissions and server versions. Photo backup runs while this app is open; background push alerts are not included.").foregroundStyle(.secondary)
                 }
-                Section("Privacy") { Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. Your Unraid web sign-in is remembered on this device for server tools. Saved server session cookies are protected in Keychain. External app websites use their own browser sessions.") }
+                Section("Privacy") {
+                    Toggle("Load icons from external hosts", isOn: $allowRemoteIcons)
+                    Text("Off by default. Native app icons from external hosts can reveal your IP address and requested icon to that host. Custom icons stay on this device. Server web pages such as Discover can load their own third-party resources.").font(.caption)
+                    if temporaryCleanupFailed { Text("Temporary file cleanup could not finish. Unlock the phone and restart AsterOS to retry.").foregroundStyle(.orange) }
+                    Text("File transfers require the app’s private Tailscale connection. App pages require HTTPS or a known Tailscale peer routed through the app’s private connection. Original photo metadata, including location, is preserved in backups. Discover and terminal use your Unraid web session and may have administrator access. Removing a connection deletes local credentials; revoke its API key on Unraid to invalidate it on the server.").font(.caption)
+                    Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. Your Unraid web sign-in is remembered on this device for server tools. Saved server session cookies are protected in Keychain. External app websites use their own browser sessions.") }
                 if let error { Text(error).foregroundStyle(.orange) }
             }.navigationTitle("Settings").sheet(isPresented: $adding) { ConnectionView() }
                 .sheet(item: $renewing) { ConnectionView(renewing: $0) }

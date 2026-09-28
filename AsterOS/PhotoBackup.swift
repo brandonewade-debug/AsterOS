@@ -177,6 +177,7 @@ enum PhotoBackupPolicy {
         activeShareIdentity = (connection.host, connection.username)
         _ = try await TailnetStore.shared.prepare(for: connection.host)
         try check()
+        try TailnetStore.shared.requirePrivateFileRoute(host: connection.host)
         let result = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
         client = result; touch()
         try await result.login(username: connection.username, password: CredentialStore.read(connection.id), requireSigning: true)
