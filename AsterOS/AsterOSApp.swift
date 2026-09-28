@@ -184,9 +184,11 @@ struct ContainerIcon: View {
                 Circle().fill(container.state == "RUNNING" ? Color.green : Color.secondary)
                     .frame(width: 10, height: 10).overlay(Circle().stroke(DockTheme.background, lineWidth: 2)).offset(x: 2, y: 2)
             }
-            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)-\(customImage != nil)-\(allowRemoteIcons)") {
+            .task(id: "\(container.iconAddress(server: server)?.absoluteString ?? "none")-\(tailnet.revision)-\(tailnet.running)-\(customImage != nil)-\(allowRemoteIcons)-\(server?.absoluteString ?? "")-\(container.name)") {
                 loadedImage = nil
-                guard customImage == nil, let url = container.iconAddress(server: server), allowRemoteIcons || server.map { CatalogPolicy.sameOrigin(url, $0) } == true else { return }
+                guard customImage == nil else { return }
+                for url in AppIconPolicy.candidates(icon: container.iconAddress(server: server)?.absoluteString, name: container.name, server: server, allowExternal: allowRemoteIcons) {
+                guard !Task.isCancelled else { return }
                 do {
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForResource = 15
@@ -194,9 +196,11 @@ struct ContainerIcon: View {
                     let session = URLSession(configuration: config, delegate: RejectRedirects(), delegateQueue: nil)
                     defer { session.invalidateAndCancel() }
                     let (bytes, response) = try await session.data(from: url)
-                    guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200, bytes.count < 5_000_000 else { return }
+                    guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200, bytes.count < 5_000_000 else { continue }
                     loadedImage = UIImage(data: bytes)
-                } catch { /* Keep the container initials if its icon is unavailable. */ }
+                    if loadedImage != nil { return }
+                } catch { /* Try the next permitted source. */ }
+                }
             }
     }
 }
@@ -316,7 +320,7 @@ struct SettingsView: View {
                 }
                 Section("Privacy") {
                     Toggle("Load icons from external hosts", isOn: $allowRemoteIcons)
-                    Text("Off by default. Native app icons from external hosts can reveal your IP address and requested icon to that host. Custom icons stay on this device. Server web pages such as Discover can load their own third-party resources.").font(.caption)
+                    Text("Server-hosted and cached icons load automatically. External downloads are off by default. Native app icons from external hosts can reveal your IP address and requested icon to that host. Custom icons stay on this device. Server web pages such as Discover can load their own third-party resources.").font(.caption)
                     if temporaryCleanupFailed { Text("Temporary file cleanup could not finish. Unlock the phone and restart AsterOS to retry.").foregroundStyle(.orange) }
                     Text("File transfers require the app’s private Tailscale connection. App pages require HTTPS or a known Tailscale peer routed through the app’s private connection. Original photo metadata, including location, is preserved in backups. Discover and terminal use your Unraid web session and may have administrator access. Removing a connection deletes local credentials; revoke its API key on Unraid to invalidate it on the server.").font(.caption)
                     Text("Server keys stay in the device Keychain. AsterOS has no analytics account. Photo backups upload only to your chosen server after you start them. Private connectivity uses your Tailscale account. Your Unraid web sign-in is remembered on this device for server tools. Saved server session cookies are protected in Keychain. External app websites use their own browser sessions.") }

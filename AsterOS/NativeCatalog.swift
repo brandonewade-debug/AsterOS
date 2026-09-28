@@ -142,6 +142,8 @@ enum NativeCatalogBridge {
 }
 struct CatalogArtwork: View {
     let app: CatalogApp
+    let server: URL
+    @ObservedObject private var tailnet = TailnetStore.shared
     @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
     @State private var image: UIImage?
     var body: some View {
@@ -149,10 +151,10 @@ struct CatalogArtwork: View {
             if let image { Image(uiImage: image).resizable().scaledToFit() }
             else { Image(systemName: "shippingbox.fill").resizable().scaledToFit().padding(14).foregroundStyle(.mint.gradient) }
         }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .task(id: app.icon + String(allowRemoteIcons)) {
+        .task(id: app.icon + app.name + server.absoluteString + String(allowRemoteIcons) + String(tailnet.revision) + String(tailnet.running)) {
             image = nil
-            guard allowRemoteIcons else { return }
-            guard let url = URL(string: app.icon), url.scheme == "https", url.user == nil, url.password == nil else { return }
+            for url in AppIconPolicy.candidates(icon: app.icon, name: app.name, server: server, allowExternal: allowRemoteIcons) {
+            guard !Task.isCancelled else { return }
             if let cached = CatalogImageCache.images.object(forKey: url as NSURL) { image = cached; return }
             do {
                 let configuration = URLSessionConfiguration.ephemeral
@@ -161,10 +163,11 @@ struct CatalogArtwork: View {
                 let session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)
                 defer { session.invalidateAndCancel() }
                 let (data, response) = try await session.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 5_000_000, !Task.isCancelled else { return }
+                guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 5_000_000, !Task.isCancelled else { continue }
                 image = UIImage(data: data)
-                if let image { CatalogImageCache.images.setObject(image, forKey: url as NSURL, cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count) }
+                if let image { CatalogImageCache.images.setObject(image, forKey: url as NSURL, cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count); return }
             } catch { }
+            }
         }
     }
 }
@@ -239,7 +242,7 @@ struct NativeAppStoreView: View {
                                     ForEach(visible) { app in
                                         Button { selected = app } label: {
                                             HStack(alignment: .top, spacing: 16) {
-                                                CatalogArtwork(app: app)
+                                                CatalogArtwork(app: app, server: server.address)
                                                 VStack(alignment: .leading, spacing: 5) {
                                                     Text(app.name).font(.headline).foregroundStyle(.primary)
                                                     Text(app.isPlugin ? "Plugin" : "Docker").font(.caption2).foregroundStyle(.secondary)
@@ -287,7 +290,7 @@ struct NativeAppStoreView: View {
                     NavigationStack {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 22) {
-                                HStack(spacing: 18) { CatalogArtwork(app: app); VStack(alignment: .leading, spacing: 5) { Text(app.name).font(.title2.bold()); Text(app.author).font(.caption).foregroundStyle(.secondary) } }
+                                HStack(spacing: 18) { CatalogArtwork(app: app, server: server.address); VStack(alignment: .leading, spacing: 5) { Text(app.name).font(.title2.bold()); Text(app.author).font(.caption).foregroundStyle(.secondary) } }
                                 if !app.category.isEmpty { Text(app.category).font(.subheadline).foregroundStyle(.mint) }
                                 Text(app.summary.isEmpty ? "No description supplied by this template." : app.summary)
                                 if !app.note.isEmpty { Label(app.note, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary) }
