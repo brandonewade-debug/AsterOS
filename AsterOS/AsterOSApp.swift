@@ -160,6 +160,7 @@ struct ConnectionView: View {
     }
 }
 struct ContainerIcon: View {
+    @EnvironmentObject private var appStore: AppStore
     let container: Container
     let server: URL?
     @State private var loadedImage: UIImage?
@@ -195,7 +196,11 @@ struct ContainerIcon: View {
                     config.proxyConfigurations = try await tailnet.prepare(for: url.host)
                     let session = URLSession(configuration: config, delegate: RejectRedirects(), delegateQueue: nil)
                     defer { session.invalidateAndCancel() }
-                    let (bytes, response) = try await session.data(from: url)
+                    let request: URLRequest
+                    if let profile = appStore.selected, let server, profile.address == server {
+                        request = try await ServerWebSession.artworkRequest(url: url, server: server, serverID: profile.id)
+                    } else { request = URLRequest(url: url) }
+                    let (bytes, response) = try await session.data(for: request)
                     guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200, bytes.count < 5_000_000 else { continue }
                     loadedImage = UIImage(data: bytes)
                     if loadedImage != nil { return }

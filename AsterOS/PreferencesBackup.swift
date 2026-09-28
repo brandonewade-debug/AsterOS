@@ -39,7 +39,10 @@ struct PreferencesArchive: Codable {
             }
         }
         for app in apps {
-            _ = try AddressPolicy.validate(app.url.absoluteString)
+            if app.url.scheme?.lowercased() == "http",
+               let host = app.url.host, TailnetPolicy.contains(host), AppWebPolicy.allows(app.url) {
+                // Importing a saved route never grants access; BrowserModel verifies the live peer.
+            } else { _ = try AddressPolicy.validate(app.url.absoluteString) }
             guard text(app.name), text(app.symbol, limit: 100), app.url.absoluteString.utf8.count <= 4096,
                   app.containerID.map({ text($0) }) ?? true else { throw AppError.message("Invalid app shortcut in preferences file.") }
         }
