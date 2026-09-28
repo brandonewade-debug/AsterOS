@@ -44,6 +44,12 @@ enum PrivateTemporaryFiles {
 
 // Native artwork never follows redirects or attaches API/server credentials.
 enum AppIconPolicy {
+    static func mayAuthenticate(_ url: URL, server: URL) -> Bool {
+        guard url.scheme == "https", url.user == nil, url.password == nil,
+              CatalogPolicy.sameOrigin(url, server),
+              ["png", "jpg", "jpeg", "webp", "gif"].contains(url.pathExtension.lowercased()) else { return false }
+        return url.path.hasPrefix("/state/plugins/dynamix.docker.manager/images/") || url.path.hasPrefix("/plugins/")
+    }
     static func candidates(icon: String?, name: String, server: URL?, allowExternal: Bool) -> [URL] {
         var result: [URL] = []
         let supplied = icon.flatMap { URL(string: $0, relativeTo: server)?.absoluteURL }
@@ -60,5 +66,14 @@ enum AppIconPolicy {
         }
         if allowExternal, let supplied, safe(supplied), !result.contains(supplied) { result.append(supplied) }
         return result
+    }
+}
+
+enum PrivateAppAddress {
+    static func replacingHost(of url: URL, with server: URL) -> URL? {
+        guard AppWebPolicy.allows(url), let host = server.host, TailnetPolicy.contains(host),
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
+        parts.host = host
+        return parts.url
     }
 }

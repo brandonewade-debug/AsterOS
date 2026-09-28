@@ -105,6 +105,20 @@ import SwiftUI
         if let containerID { profiles[i].apps.removeAll { $0.containerID == containerID || ($0.containerID == nil && $0.name.caseInsensitiveCompare(name) == .orderedSame) } }
         profiles[i].apps.append(SavedApp(name: name.isEmpty ? (url.host ?? "App") : name, url: url, containerID: containerID)); persist()
     }
+    func usePrivateAddress(for app: SavedApp) throws -> URL {
+        guard let i = profiles.firstIndex(where: { $0.id == selectedID }),
+              let url = PrivateAppAddress.replacingHost(of: app.url, with: profiles[i].address),
+              let host = url.host, TailnetStore.shared.isKnownPeer(host) else {
+            throw AppError.message("Connect AsterOS to Tailscale and select your server’s Tailscale address first.")
+        }
+        var saved = app; saved.url = url
+        if let index = profiles[i].apps.firstIndex(where: { $0.id == app.id || (app.containerID != nil && $0.containerID == app.containerID) }) {
+            saved.id = profiles[i].apps[index].id
+            profiles[i].apps[index] = saved
+        } else { profiles[i].apps.append(saved) }
+        persist()
+        return url
+    }
     func importPreferences(_ archive: PreferencesArchive, serverID: UUID) throws {
         guard let index = profiles.firstIndex(where: { $0.id == serverID }), selectedID == serverID else { throw AppError.message("The selected server changed.") }
         guard photoBackups[serverID]?.busy != true else { throw AppError.message("Pause photo backup before restoring preferences.") }

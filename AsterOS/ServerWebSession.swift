@@ -39,6 +39,15 @@ import Security
         return properties.compactMap { HTTPCookie(properties: Dictionary(uniqueKeysWithValues: $0.map { (HTTPCookiePropertyKey($0.key), $0.value) })) }
             .filter { accepts($0, server: server) }
     }
+    static func artworkRequest(url: URL, server: URL, serverID: UUID) async throws -> URLRequest {
+        var request = URLRequest(url: url)
+        guard AppIconPolicy.mayAuthenticate(url, server: server) else { return request }
+        let live = await CatalogSession.dataStore(serverID: serverID).httpCookieStore.allCookies()
+        var cookies = live.filter { accepts($0, server: server) }
+        if cookies.isEmpty, let data = try read(serverID) { cookies = try decode(data, server: server) }
+        for (name, value) in HTTPCookie.requestHeaderFields(with: cookies) { request.setValue(value, forHTTPHeaderField: name) }
+        return request
+    }
     func restore() async throws {
         guard !restored else { return }
         if let data = try Self.read(serverID) {

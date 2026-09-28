@@ -75,16 +75,48 @@ struct BrowserSurface: UIViewRepresentable {
 }
 struct AppBrowser: View {
     let app: SavedApp
+    @EnvironmentObject private var store: AppStore
+    @ObservedObject private var tailnet = TailnetStore.shared
+    @State private var selectedURL: URL?
+    @State private var routeError: String?
+    private var resolved: SavedApp { var value = app; value.url = selectedURL ?? app.url; return value }
+    private var candidate: URL? {
+        guard let server = store.selected?.address,
+              let url = PrivateAppAddress.replacingHost(of: resolved.url, with: server),
+              url != resolved.url else { return nil }
+        return url
+    }
+    var body: some View {
+        AppBrowserContent(app: resolved, privateAddress: candidate, routeError: routeError) {
+            do { selectedURL = try store.usePrivateAddress(for: resolved); routeError = nil }
+            catch { routeError = error.localizedDescription }
+        }.id(resolved.url)
+    }
+}
+private struct AppBrowserContent: View {
+    let app: SavedApp
+    let privateAddress: URL?
+    let routeError: String?
+    let usePrivate: () -> Void
     @StateObject private var model: BrowserModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    init(app: SavedApp) { self.app = app; _model = StateObject(wrappedValue: BrowserModel(url: app.url)) }
+    init(app: SavedApp, privateAddress: URL?, routeError: String?, usePrivate: @escaping () -> Void) {
+        self.app = app; self.privateAddress = privateAddress; self.routeError = routeError; self.usePrivate = usePrivate
+        _model = StateObject(wrappedValue: BrowserModel(url: app.url))
+    }
     var body: some View {
         BrowserSurface(model: model)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     if model.loading { ProgressView().frame(maxWidth: .infinity) }
                     if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                    if let privateAddress {
+                        Button("Use Tailscale address", systemImage: "network.badge.shield.half.filled", action: usePrivate)
+                        Text("Opens this app on your server through Tailscale and remembers your choice. Port and path stay the same.").font(.caption).foregroundStyle(.secondary)
+                        Text(privateAddress.absoluteString).font(.caption2).lineLimit(2)
+                    }
+                    if let routeError { Text(routeError).font(.caption).foregroundStyle(.orange) }
                     HStack {
                         Label(app.name, systemImage: app.symbol).font(.headline)
                         Spacer()

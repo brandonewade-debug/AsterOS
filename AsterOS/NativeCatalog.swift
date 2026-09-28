@@ -143,6 +143,7 @@ enum NativeCatalogBridge {
 struct CatalogArtwork: View {
     let app: CatalogApp
     let server: URL
+    let serverID: UUID
     @ObservedObject private var tailnet = TailnetStore.shared
     @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
     @State private var image: UIImage?
@@ -162,7 +163,8 @@ struct CatalogArtwork: View {
                 configuration.proxyConfigurations = try await TailnetStore.shared.prepare(for: url.host)
                 let session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)
                 defer { session.invalidateAndCancel() }
-                let (data, response) = try await session.data(from: url)
+                let request = try await ServerWebSession.artworkRequest(url: url, server: server, serverID: serverID)
+                let (data, response) = try await session.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200, data.count < 5_000_000, !Task.isCancelled else { continue }
                 image = UIImage(data: data)
                 if let image { CatalogImageCache.images.setObject(image, forKey: url as NSURL, cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count); return }
@@ -172,6 +174,7 @@ struct CatalogArtwork: View {
     }
 }
 struct NativeAppStoreView: View {
+    @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
     let server: ServerProfile
     @ObservedObject var model: CatalogBrowserModel
     @Environment(\.dismiss) private var dismiss
@@ -204,6 +207,12 @@ struct NativeAppStoreView: View {
                                     Text("Community Applications · \(server.name)").font(.caption).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 10)
+                            if !allowRemoteIcons {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Some artwork is hosted outside your server. Loading it shares your IP address with those image hosts.").font(.caption).foregroundStyle(.secondary)
+                                    Button("Allow external app icons") { allowRemoteIcons = true }
+                                }
+                            }
                             Picker("App type", selection: Binding(get: { model.catalogKind }, set: { value in
                                 Task { await model.selectCatalogKind(value, query: query) }
                             })) {
@@ -242,7 +251,7 @@ struct NativeAppStoreView: View {
                                     ForEach(visible) { app in
                                         Button { selected = app } label: {
                                             HStack(alignment: .top, spacing: 16) {
-                                                CatalogArtwork(app: app, server: server.address)
+                                                CatalogArtwork(app: app, server: server.address, serverID: server.id)
                                                 VStack(alignment: .leading, spacing: 5) {
                                                     Text(app.name).font(.headline).foregroundStyle(.primary)
                                                     Text(app.isPlugin ? "Plugin" : "Docker").font(.caption2).foregroundStyle(.secondary)
@@ -290,7 +299,7 @@ struct NativeAppStoreView: View {
                     NavigationStack {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 22) {
-                                HStack(spacing: 18) { CatalogArtwork(app: app, server: server.address); VStack(alignment: .leading, spacing: 5) { Text(app.name).font(.title2.bold()); Text(app.author).font(.caption).foregroundStyle(.secondary) } }
+                                HStack(spacing: 18) { CatalogArtwork(app: app, server: server.address, serverID: server.id); VStack(alignment: .leading, spacing: 5) { Text(app.name).font(.title2.bold()); Text(app.author).font(.caption).foregroundStyle(.secondary) } }
                                 if !app.category.isEmpty { Text(app.category).font(.subheadline).foregroundStyle(.mint) }
                                 Text(app.summary.isEmpty ? "No description supplied by this template." : app.summary)
                                 if !app.note.isEmpty { Label(app.note, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary) }
