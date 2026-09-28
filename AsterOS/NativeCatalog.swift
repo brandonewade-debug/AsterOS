@@ -142,13 +142,16 @@ enum NativeCatalogBridge {
 }
 struct CatalogArtwork: View {
     let app: CatalogApp
+    @AppStorage("allowRemoteAppIcons") private var allowRemoteIcons = false
     @State private var image: UIImage?
     var body: some View {
         Group {
             if let image { Image(uiImage: image).resizable().scaledToFit() }
             else { Image(systemName: "shippingbox.fill").resizable().scaledToFit().padding(14).foregroundStyle(.mint.gradient) }
         }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .task(id: app.icon) {
+        .task(id: app.icon + String(allowRemoteIcons)) {
+            image = nil
+            guard allowRemoteIcons else { return }
             guard let url = URL(string: app.icon), url.scheme == "https", url.user == nil, url.password == nil else { return }
             if let cached = CatalogImageCache.images.object(forKey: url as NSURL) { image = cached; return }
             do {
