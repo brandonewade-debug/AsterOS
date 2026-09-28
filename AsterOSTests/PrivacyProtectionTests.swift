@@ -32,6 +32,16 @@ final class PrivacyProtectionTests: XCTestCase {
             try await WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier)
         }
     }
+    func testIconSourcesPreferServerAndRespectExternalConsent() {
+        let server = URL(string: "https://tower.example.ts.net:444")!
+        let cache = "https://tower.example.ts.net:444/state/plugins/dynamix.docker.manager/images/Plex-icon.png"
+        XCTAssertEqual(AppIconPolicy.candidates(icon: "https://cdn.example/icon.png", name: "Plex", server: server, allowExternal: false).map(\.absoluteString), [cache])
+        XCTAssertEqual(AppIconPolicy.candidates(icon: "https://cdn.example/icon.png", name: "Plex", server: server, allowExternal: true).map(\.absoluteString), [cache, "https://cdn.example/icon.png"])
+        XCTAssertEqual(AppIconPolicy.candidates(icon: "/icons/plex.png", name: "Plex", server: server, allowExternal: false).first?.absoluteString, "https://tower.example.ts.net:444/icons/plex.png")
+        for icon in ["https://tower.example.ts.net.evil/icon.png", "https://tower.example.ts.net:445/icon.png", "https://user:password@tower.example.ts.net:444/icon.png", "http://cdn.example/icon.png"] {
+            XCTAssertTrue(AppIconPolicy.candidates(icon: icon, name: "../escape", server: server, allowExternal: false).isEmpty)
+        }
+    }
     func testCleanupRemovesOnlyOwnedTransferDirectoriesAndDoesNotFollowLinks() throws {
         let manager = FileManager.default
         let root = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
