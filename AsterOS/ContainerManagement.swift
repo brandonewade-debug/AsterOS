@@ -105,8 +105,8 @@ enum CatalogPolicy {
         return base.appendingPathComponent("Apps")
     }
     static func sameOrigin(_ a: URL, _ b: URL) -> Bool {
-        a.scheme?.lowercased() == "https" && b.scheme?.lowercased() == "https" &&
-        a.host?.lowercased() == b.host?.lowercased() && (a.port ?? 443) == (b.port ?? 443)
+        LocalHTTPPolicy.permits(a) && LocalHTTPPolicy.permits(b) &&
+        LocalHTTPPolicy.origin(a) == LocalHTTPPolicy.origin(b)
     }
     static func returnAfterLogin(_ url: URL, catalog: URL, sawLogin: Bool) -> Bool {
         sawLogin && sameOrigin(url, catalog) && ["main", "dashboard"].contains(url.lastPathComponent.lowercased())
@@ -465,13 +465,13 @@ struct CatalogDialog {
         if (error as NSError).code != NSURLErrorCancelled { self.error = "Could not load Discover (\((error as NSError).code)). Check the private connection. If you submitted an install, check your Apps grid before trying again." }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url, (url.scheme == "https" && url.user == nil && url.password == nil) || url.absoluteString == "about:blank" else {
-            error = "Discover requires a secure HTTPS page."; decisionHandler(.cancel); return
+        guard let url = navigationAction.request.url, LocalHTTPPolicy.permits(url) || url.absoluteString == "about:blank" else {
+            error = "This address is not approved. Use HTTPS or explicitly approve this local HTTP server in connection setup."; decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, url.scheme == "https", url.user == nil, url.password == nil { webView.load(navigationAction.request) }
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url, LocalHTTPPolicy.permits(url) { webView.load(navigationAction.request) }
         return nil
     }
 }

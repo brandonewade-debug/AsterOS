@@ -7,7 +7,7 @@ enum TerminalPolicy {
     static func base(_ server: URL) -> URL { CatalogPolicy.url(server: server).deletingLastPathComponent() }
     static func terminal(_ server: URL) -> URL { base(server).appendingPathComponent("webterminal/ttyd/") }
     static func allows(_ url: URL, server: URL) -> Bool {
-        url.scheme == "https" && url.user == nil && url.password == nil && CatalogPolicy.sameOrigin(url, server)
+        LocalHTTPPolicy.permits(url) && CatalogPolicy.sameOrigin(url, server)
     }
     static func attachCommand(sessionID: UUID) -> String {
         let name = "asteros-" + sessionID.uuidString.lowercased()

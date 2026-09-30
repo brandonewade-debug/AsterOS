@@ -14,7 +14,7 @@ This is a source review and mitigation pass, not an independent audit or a relea
 
 ## Existing controls inspected
 
-API and SMB credentials and archived web-session cookies use device-only Keychain storage. API URLs require HTTPS; API redirects are rejected. Authorization callbacks validate origin, state and expiry. App pages do not receive the server API header. PIN uses salted PBKDF2 and retry delays. Support reports use an allowlist of version/count/boolean fields and require explicit sharing. Tailscale state is excluded from device backup and auth/status console output is discarded by the build patch.
+API and SMB credentials and archived web-session cookies use device-only Keychain storage. API URLs require HTTPS unless the user explicitly approves one RFC1918 IPv4 HTTP origin. API redirects remain rejected. Local HTTP approval does not provide encryption or prove that a network is trusted. Hostnames, public IPs, loopback and ambiguous numeric addresses are not eligible for this exception. Authorization callbacks validate origin, state and expiry. App pages do not receive the server API header. PIN uses salted PBKDF2 and retry delays. Support reports use an allowlist of version/count/boolean fields and require explicit sharing. Tailscale state is excluded from device backup and auth/status console output is discarded by the build patch.
 
 ## Remaining work / limitations
 
@@ -30,3 +30,7 @@ API and SMB credentials and archived web-session cookies use device-only Keychai
 ## Verification
 
 Privacy tests exercise protected-destination gating, disconnected denial, private HTTP host restrictions, public HTTPS navigation, and scoped temporary cleanup (including symlinks and unrelated files). All 95 simulator tests passed on 2026-09-28, including WebKit rule compilation and the existing dashboard/demo render tests. Real-device route and packet validation remain required before treating this as a completed security release.
+
+## Local-only HTTP setup (build 14)
+
+Users can enter an explicit `http://` RFC1918 IPv4 address and acknowledge the cleartext risk once. Consent is stored locally for the exact scheme/host/port and can be revoked in Renew server access. It applies to authorization callbacks, API requests, Discover, terminal and scoped server artwork cookies. HTTP and HTTPS session archives are separate origins, and Secure cookies are not reused on HTTP. ATS exceptions cover only 10/8, 172.16/12 and 192.168/16; application-level consent remains mandatory. HTTPS certificate validation and redirect rejection are unchanged. File transfers retain the existing Tailscale requirement. Certificate errors now provide recovery guidance instead of leaving only a blank sign-in page.

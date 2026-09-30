@@ -16,11 +16,12 @@ import Security
         self.serverID = serverID; self.server = server; self.dataStore = dataStore
     }
     static func origin(_ url: URL) -> String {
-        "https://" + (url.host?.lowercased() ?? "") + ":" + String(url.port ?? 443)
+        LocalHTTPPolicy.origin(url)
     }
     static func accepts(_ cookie: HTTPCookie, server: URL, now: Date = Date()) -> Bool {
         // Unraid uses unraid_<md5(host)>; never archive SSO or other app cookies.
-        server.scheme?.lowercased() == "https" &&
+        LocalHTTPPolicy.permits(server) &&
+        (server.scheme?.lowercased() == "https" || !cookie.isSecure) &&
         cookie.domain.lowercased() == server.host?.lowercased() &&
         cookie.name.range(of: "^unraid_[0-9a-f]{32}$", options: .regularExpression) != nil &&
         cookie.path == "/" && cookie.isHTTPOnly &&

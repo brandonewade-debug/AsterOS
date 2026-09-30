@@ -21,10 +21,10 @@ struct SavedApp: Codable, Identifiable, Equatable {
 enum AddressPolicy {
     static func validate(_ input: String) throws -> URL {
         guard let c = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
-              c.scheme?.lowercased() == "https", let host = c.host, !host.isEmpty,
+              let host = c.host, !host.isEmpty,
               c.user == nil, c.password == nil, c.query == nil, c.fragment == nil,
-              let url = c.url else {
-            throw AppError.message("Enter an HTTPS address without a password, query, or fragment. Use a trusted server certificate.")
+              let url = c.url, LocalHTTPPolicy.permits(url) else {
+            throw AppError.message("Use HTTPS, or explicitly allow HTTP for this private IPv4 address in connection setup. Do not include credentials, a query, or a fragment.")
         }
         return url
     }
