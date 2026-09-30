@@ -6,6 +6,7 @@ struct ShareConnection: Codable {
     var id = UUID()
     let host: String
     let username: String
+    var allowLocalNetwork: Bool? = nil
 }
 
 @MainActor enum ShareSettings {
@@ -108,7 +109,7 @@ struct DirectFile: Identifiable {
     }
     private func begin(_ connection: ShareConnection) -> SMBClient {
         busy = true; cancelled = false; timedOut = false; error = nil
-        let client = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
+        let client = SMBClient(host: connection.host, port: 445, parameters: ShareTransport.parameters(for: connection))
         activeClient = client; touchTimeout()
         return client
     }
@@ -128,7 +129,7 @@ struct DirectFile: Identifiable {
     }
     func cancel() { cancelled = true; activeClient?.session.disconnect() }
     private func login(_ client: SMBClient, connection: ShareConnection) async throws {
-        try TailnetStore.shared.requirePrivateFileRoute(host: connection.host)
+        try ShareTransport.validate(connection)
         let password = try CredentialStore.read(connection.id)
         try await client.login(username: connection.username, password: password, requireSigning: true)
         try check(); touchTimeout()
@@ -146,14 +147,14 @@ struct DirectFile: Identifiable {
             .map { DirectFile(name: $0.name, directory: true, size: 0) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-    func connect(host: String, username: String, password: String) async throws {
+    func connect(host: String, username: String, password: String, allowLocalNetwork: Bool = false) async throws {
         guard !busy else { return }
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !username.isEmpty, username.lowercased() != "root", !password.isEmpty else {
             throw AppError.message("Use an Unraid share username and password. The root account cannot access SMB shares.")
         }
-        let candidate = ShareConnection(host: try SharePolicy.host(host), username: username)
-        try TailnetStore.shared.requirePrivateFileRoute(host: candidate.host)
+        let candidate = ShareConnection(host: try SharePolicy.host(host), username: username, allowLocalNetwork: allowLocalNetwork)
+        try ShareTransport.validate(candidate)
         let client = begin(candidate); defer { finish(client) }
         do {
             try await client.login(username: username, password: password, requireSigning: true)
@@ -271,10 +272,15 @@ struct DirectFile: Identifiable {
 }
 
 struct FilesView: View {
+    @AppStorage("filesStorageProvider") private var seafile = false
     @EnvironmentObject var app: AppStore
     var body: some View {
         if let server = app.selected, !app.demo {
-            DirectFilesView(server: server).id("files-" + server.id.uuidString)
+            VStack(spacing: 0) {
+                Picker("Storage", selection: $seafile) { Text("Unraid shares").tag(false); Text("Seafile").tag(true) }.pickerStyle(.segmented).padding(.horizontal)
+                if seafile { SeafileFilesView(server: server).id("seafile-" + server.id.uuidString) }
+                else { DirectFilesView(server: server).id("files-" + server.id.uuidString) }
+            }
         } else {
             NavigationStack {
                 ContentUnavailableView("Connect a server", systemImage: "folder", description: Text("Add your Unraid server to browse its shares directly. No companion download is required."))
@@ -393,6 +399,7 @@ struct ShareConnectionView: View {
     @State private var host = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var allowLocalNetwork = false
     @State private var error: String?
     var body: some View {
         NavigationStack {
@@ -400,6 +407,12 @@ struct ShareConnectionView: View {
                 Section("Server") {
                     TextField("Hostname or IP address", text: $host).keyboardType(.URL)
                     Text("Use the server’s full Tailscale name or IP for the AsterOS private connection, or its LAN address on Wi-Fi.").font(.caption).foregroundStyle(.secondary)
+                }
+                if LocalHTTPPolicy.isPrivateIPv4(host) {
+                    Section("Home network") {
+                        Toggle("Allow direct local file transfers", isOn: $allowLocalNetwork)
+                        Text("Use only on a network you trust. This SMB connection does not encrypt file contents. Your choice is saved for this share connection. Cellular connections are blocked; no port forwarding is needed.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section("Unraid share account") {
                     TextField("Username", text: $username).textContentType(.username)
@@ -409,17 +422,18 @@ struct ShareConnectionView: View {
                 if let error { Text(error).foregroundStyle(.orange) }
                 Button(store.busy ? "Connecting…" : "Connect shares") {
                     Task {
-                        do { try await store.connect(host: host, username: username, password: password); password = ""; dismiss() }
+                        do { try await store.connect(host: host, username: username, password: password, allowLocalNetwork: allowLocalNetwork); password = ""; dismiss() }
                         catch { self.error = error.localizedDescription }
                     }
                 }.disabled(store.busy || host.isEmpty || username.isEmpty || password.isEmpty)
-                Section { Text("File access requires Tailscale connected inside AsterOS and your server’s full .ts.net name or Tailscale IP. This protects transfers because the current SMB client does not provide encryption. LAN-only share addresses are blocked. No AsterOS companion is required.").font(.caption).foregroundStyle(.secondary) }
+                Section { Text("At home, enter your server’s private IPv4 address and allow direct local transfers. For encrypted remote access, use your server’s Tailscale address. Files and Photos share this saved connection. No companion is required.").font(.caption).foregroundStyle(.secondary) }
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()
             .navigationTitle("Connect shares")
             .toolbar { Button("Cancel") { store.cancel(); password = ""; dismiss() } }
             .interactiveDismissDisabled(store.busy)
-            .onAppear { host = store.connection?.host ?? suggestedHost; username = store.connection?.username ?? "" }
+            .onAppear { host = store.connection?.host ?? suggestedHost; username = store.connection?.username ?? ""; allowLocalNetwork = store.connection?.allowLocalNetwork ?? false }
+            .onChange(of: host) { old, new in if old != new { allowLocalNetwork = store.connection?.host == new && store.connection?.allowLocalNetwork == true } }
         }
     }
 }
