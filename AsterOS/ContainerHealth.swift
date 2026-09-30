@@ -54,8 +54,8 @@ struct ContainerHealthBanner: View {
                     .foregroundStyle(store.dockerError != nil || !summary.attention.isEmpty ? Color.orange : Color.mint)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(store.dockerError != nil ? "Container status unavailable" : summary.title).font(.headline)
-                    Text(summary.detail).font(.caption).foregroundStyle(.secondary)
-                    Text(store.dockerError != nil ? "Last reported data · tap to inspect" : "Last reported by Unraid · tap for details")
+                    Text(store.dockerError != nil && store.containers.isEmpty ? "Waiting for Docker information" : summary.detail).font(.caption).foregroundStyle(.secondary)
+                    Text(store.dockerError != nil ? (store.containers.isEmpty ? "Refresh when the service is available" : "Last reported data · tap to inspect") : "Last reported by Unraid · tap for details")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)

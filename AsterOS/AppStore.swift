@@ -33,6 +33,13 @@ import SwiftUI
     static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
+    static func containerRefreshMessage(_ error: Error, hasPreviousApps: Bool) -> String {
+        let description = error.localizedDescription
+        if description.contains("ECONNREFUSED"), description.contains("docker.sock") {
+            return "Your server responded, but its Docker service is unavailable. Check Docker in Unraid Settings, then refresh. Your saved app folders have not been removed."
+        }
+        return (hasPreviousApps ? "Could not refresh apps. Showing the previous list; status may be out of date. " : "Could not load apps. Your saved app folders have not been removed. ") + description
+    }
     private func stage(_ title: String) { connectionStage = title; stageStarted = Date() }
     var selected: ServerProfile? { profiles.first { $0.id == selectedID } }
     private let defaults: UserDefaults
@@ -148,7 +155,7 @@ import SwiftUI
                 try Task.checkCancellation()
                 guard token == generation else { return }
                 containers = result; dockerError = nil
-            } catch { if Self.isCancellation(error) || Task.isCancelled { return }; if token == generation { dockerError = "Could not refresh apps. The last loaded list is shown and may be out of date. " + error.localizedDescription } }
+            } catch { if Self.isCancellation(error) || Task.isCancelled { return }; if token == generation { dockerError = Self.containerRefreshMessage(error, hasPreviousApps: !containers.isEmpty) } }
             guard token == generation else { return }
             stage("Loading live metrics")
             do {
