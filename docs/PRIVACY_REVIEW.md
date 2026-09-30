@@ -34,3 +34,15 @@ Privacy tests exercise protected-destination gating, disconnected denial, privat
 ## Local-only HTTP setup (build 14)
 
 Users can enter an explicit `http://` RFC1918 IPv4 address and acknowledge the cleartext risk once. Consent is stored locally for the exact scheme/host/port and can be revoked in Renew server access. It applies to authorization callbacks, API requests, Discover, terminal and scoped server artwork cookies. HTTP and HTTPS session archives are separate origins, and Secure cookies are not reused on HTTP. ATS exceptions cover only 10/8, 172.16/12 and 192.168/16; application-level consent remains mandatory. HTTPS certificate validation and redirect rejection are unchanged. File transfers retain the existing Tailscale requirement. Certificate errors now provide recovery guidance instead of leaving only a blank sign-in page.
+
+## Direct home-network files (build 15)
+
+Files and Photos share a saved SMB connection with an optional `allowLocalNetwork` consent flag. Older connections decode without this flag and retain their existing Tailscale-only behavior. Direct TCP is allowed only when the user explicitly enables local transfers for an RFC1918 IPv4 literal. That route prohibits cellular interfaces and is never substituted automatically for a failed Tailscale connection. The existing SMB client does not encrypt file contents; the setup screen discloses this. A private IP is not proof of a trusted network. Users must choose networks they trust. Public IPs, DNS names and Tailscale addresses cannot select this direct path. Credentials remain in device-only Keychain, and transfer naming, receipts, resume and no-overwrite behavior are unchanged.
+
+## Build 15: Seafile storage
+
+Files and Photos now offer Seafile alongside Unraid SMB. Seafile account sign-in supports an optional OTP; only the returned API token is stored in device Keychain. Passwords are not persisted. Account-token entry is also supported. Library permissions are enforced server-side; the backup picker shows writable, unencrypted libraries only. Encrypted libraries are explicitly unsupported. Seafile connections, destinations, and journals are separate from SMB, and deleting the Unraid profile removes its Seafile credential.
+
+API calls use ephemeral URLSession storage, no browser cookies, and reject redirects. File links must match the configured scheme/host/port and never receive the account token. Public HTTP and invalid TLS certificates remain blocked. Explicit private-IP HTTP consent is per origin; Seafile HTTP sessions disallow cellular access. Deployments with a separate file-server origin require a matching-origin proxy configuration in this first version.
+
+Uploads use multipart bodies staged on disk, never whole-video Data buffers. Backups upload to unique staging names, read back and compare bytes, then rename without overwriting and confirm the returned file identity before recording completion. Failed staging uploads may remain on Seafile for diagnosis. Source photos are not removed. Background execution remains subject to iOS scheduling and cancellation.

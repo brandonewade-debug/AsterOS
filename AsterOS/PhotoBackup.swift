@@ -101,7 +101,7 @@ enum PhotoBackupPolicy {
     private let defaults: UserDefaults
     private let serverID: UUID
     private let serverAddress: URL?
-    private var client: SMBClient?
+    private var client: BackupStorage?
     private var activeShareIdentity: (host: String, username: String)?
     private var watchdog: Task<Void, Never>?
     private var task: Task<Void, Never>?
@@ -110,12 +110,14 @@ enum PhotoBackupPolicy {
     private var pauseReason = "Paused · tap Back up now to continue"
     private var paused = false
     private var timedOut = false
+    let usesSeafile: Bool
+    @Published var libraryNames: [String: String] = [:]
     private let settingsKey: String
-    var hasShareAccount: Bool { ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) != nil }
-    init(serverID: UUID, address: URL? = nil, knownServerIDs: [UUID] = [], defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    var hasShareAccount: Bool { if usesSeafile { return serverAddress.flatMap(SeafileSettings.load) != nil }; return ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) != nil }
+    init(serverID: UUID, address: URL? = nil, knownServerIDs: [UUID] = [], usesSeafile: Bool = false, defaults: UserDefaults = .standard) {
+        self.defaults = defaults; self.usesSeafile = usesSeafile
         self.serverID = serverID; self.serverAddress = address
-        settingsKey = PhotoDestinationPolicy.settingsKey(serverID: serverID, address: address, knownServerIDs: knownServerIDs, defaults: defaults)
+        settingsKey = PhotoDestinationPolicy.settingsKey(serverID: serverID, address: address, knownServerIDs: knownServerIDs, defaults: defaults) + (usesSeafile ? "-seafile" : "")
         if let saved = defaults.dictionary(forKey: settingsKey) as? [String: String] {
             share = saved["share"] ?? ""; folder = saved["folder"] ?? "AsterOS Photos"
         }
@@ -167,22 +169,30 @@ enum PhotoBackupPolicy {
         watchdog?.cancel()
         watchdog = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
-            self?.timedOut = true; self?.client?.session.disconnect()
+            self?.timedOut = true; self?.client?.disconnect()
         }
     }
-    private func openShareClient() async throws -> SMBClient {
+    private func openShareClient() async throws -> BackupStorage {
+        if usesSeafile {
+            guard let address = serverAddress, let saved = SeafileSettings.load(address) else { throw AppError.message("Connect Seafile in Files first.") }
+            let api = SeafileClient(connection: saved, token: try CredentialStore.read(saved.id))
+            api.activity = { [weak self] in self?.touch() }
+            let storage = BackupStorage(seafile: api)
+            activeShareIdentity = (saved.address.absoluteString, saved.id.uuidString)
+            client = storage; touch(); return storage
+        }
         guard let connection = ShareSettings.load(serverID: serverID, address: serverAddress, defaults: defaults) else {
             throw AppError.message("Connect your Unraid share account in Files first, then return here.")
         }
         activeShareIdentity = (connection.host, connection.username)
-        _ = try await TailnetStore.shared.prepare(for: connection.host)
+        if !ShareTransport.isLocal(connection) { _ = try await TailnetStore.shared.prepare(for: connection.host) }
         try check()
-        try TailnetStore.shared.requirePrivateFileRoute(host: connection.host)
-        let result = SMBClient(host: connection.host, port: 445, parameters: TailnetStore.shared.smbParameters())
-        client = result; touch()
+        try ShareTransport.validate(connection)
+        let result = SMBClient(host: connection.host, port: 445, parameters: ShareTransport.parameters(for: connection))
+        client = BackupStorage(smb: result); touch()
         try await result.login(username: connection.username, password: CredentialStore.read(connection.id), requireSigning: true)
         try check(); touch()
-        return result
+        return client!
     }
     private func reportExecution() {
         execution?.update(completed: completed, total: total, fraction: progress, status: status)
@@ -195,7 +205,7 @@ enum PhotoBackupPolicy {
     }
     private func finish() {
         execution?.finish(success: false); execution = nil
-        watchdog?.cancel(); watchdog = nil; client?.session.disconnect(); client = nil; activeShareIdentity = nil
+        watchdog?.cancel(); watchdog = nil; client?.disconnect(); client = nil; activeShareIdentity = nil
         busy = false; backingUp = false; task = nil
     }
     func loadShares() async {
@@ -204,7 +214,13 @@ enum PhotoBackupPolicy {
         defer { finish() }
         do {
             let client = try await openShareClient()
-            shares = try await client.listShares().filter { $0.type == .diskTree && (try? SharePolicy.name($0.name)) != nil }.map(\.name).sorted()
+            if let api = client.seafile {
+                let libraries = try await api.libraries().filter(\.writable)
+                libraryNames = Dictionary(uniqueKeysWithValues: libraries.map { ($0.id, $0.name) })
+                shares = libraries.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }.map(\.id)
+            } else {
+                shares = try await client.smb!.listShares().filter { $0.type == .diskTree && (try? SharePolicy.name($0.name)) != nil }.map(\.name).sorted()
+            }
             if !share.isEmpty && !shares.contains(share) {
                 error = "Your saved share is currently unavailable. Its destination and progress have been kept; check the share account permissions."
             }
@@ -243,7 +259,7 @@ enum PhotoBackupPolicy {
     func pause(reason: String = "Paused · tap Back up now to continue") {
         guard backingUp else { return }
         pauseReason = reason
-        paused = true; status = "Pausing…"; task?.cancel(); client?.session.disconnect()
+        paused = true; status = "Pausing…"; task?.cancel(); client?.disconnect()
     }
     private func backup(share: String, folder: String, layout: PhotoFolderLayout, limit: Int?, verifyExisting: Bool) async {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("asteros-photos-" + UUID().uuidString)
@@ -467,7 +483,7 @@ enum PhotoBackupPolicy {
             else { status = "Backup stopped"; self.error = error.localizedDescription }
         }
     }
-    private func upload(_ file: URL, to destination: String, client: SMBClient, size: UInt64, progressBase: Double = 0, progressSpan: Double = 0) async throws {
+    private func upload(_ file: URL, to destination: String, client: BackupStorage, size: UInt64, progressBase: Double = 0, progressSpan: Double = 0) async throws {
         let parent = destination.split(separator: "/").dropLast().joined(separator: "/")
         let staging = (parent.isEmpty ? "" : parent + "/") + ".asteros-upload-" + UUID().uuidString
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
@@ -512,12 +528,29 @@ enum PhotoBackupPolicy {
 }
 
 struct PhotosView: View {
+    @AppStorage("photoStorageProvider") private var seafile = false
     @EnvironmentObject var app: AppStore
     var body: some View {
-        if let server = app.selected, !app.demo { PhotoBackupView(server: server, backup: app.photoBackup(for: server)).id("photos-" + server.id.uuidString + "-\(app.preferencesRevision)") }
+        if let server = app.selected, !app.demo {
+            PhotoStorageChooser(server: server, local: app.photoBackup(for: server), cloud: app.photoBackup(for: server, seafile: true), seafile: $seafile, revision: app.preferencesRevision)
+        }
         else { NavigationStack { ContentUnavailableView("Connect your server", systemImage: "photo", description: Text("Connect Unraid to set up photo backup to one of its shares.")).navigationTitle("Photos") } }
     }
 }
+struct PhotoStorageChooser: View {
+    let server: ServerProfile
+    @ObservedObject var local: PhotoBackupStore
+    @ObservedObject var cloud: PhotoBackupStore
+    @Binding var seafile: Bool
+    let revision: Int
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Backup storage", selection: $seafile) { Text("Unraid shares").tag(false); Text("Seafile").tag(true) }.pickerStyle(.segmented).padding(.horizontal).disabled(local.busy || cloud.busy)
+            PhotoBackupView(server: server, backup: seafile ? cloud : local).id("photos-" + server.id.uuidString + "-\(seafile)-\(revision)")
+        }
+    }
+}
+
 struct PhotoBackupView: View {
     let server: ServerProfile
     @ObservedObject var backup: PhotoBackupStore
@@ -530,20 +563,20 @@ struct PhotoBackupView: View {
             GlassForm {
                 Section {
                     Label("Your photos. Your server.", systemImage: "photo.on.rectangle.angled").font(.title2.bold())
-                    Text("Copy photos, videos and Live Photo resources to \(server.name). Uploads are verified before completion. Originals stay on your iPhone.").foregroundStyle(.secondary)
+                    Text("Copy photos, videos and Live Photo resources to \(backup.usesSeafile ? "Seafile" : server.name). Uploads are verified before completion. Originals stay on your iPhone.").foregroundStyle(.secondary)
                 }
                 Section("Backup destination") {
-                    if !backup.hasShareAccount { Text("Connect your share account in the Files tab first, then return here.") }
-                    Button("Load my Unraid shares") { Task { await backup.loadShares() } }.disabled(backup.busy)
-                    Picker("Share", selection: $backup.share) {
-                        Text("Choose a share").tag("")
+                    if !backup.hasShareAccount { Text(backup.usesSeafile ? "Connect Seafile in the Files tab first, then return here." : "Connect your share account in the Files tab first, then return here.") }
+                    Button(backup.usesSeafile ? "Load my Seafile libraries" : "Load my Unraid shares") { Task { await backup.loadShares() } }.disabled(backup.busy)
+                    Picker(backup.usesSeafile ? "Library" : "Share", selection: $backup.share) {
+                        Text(backup.usesSeafile ? "Choose a library" : "Choose a share").tag("")
                         if !backup.share.isEmpty && !backup.shares.contains(backup.share) { Text(backup.share).tag(backup.share) }
-                        ForEach(backup.shares, id: \.self) { Text($0).tag($0) }
+                        ForEach(backup.shares, id: \.self) { Text(backup.libraryNames[$0] ?? $0).tag($0) }
                     }.disabled(backup.busy)
                     Button { choosingFolder = true } label: {
                         Label(backup.folder.isEmpty ? "Share root" : backup.folder, systemImage: "folder")
                     }.disabled(backup.busy || backup.share.isEmpty)
-                    Text("Tap the folder to browse your share. To resume, choose the original backup folder containing Photos/Videos or the older year folders.").font(.caption).foregroundStyle(.secondary)
+                    Text("Tap the folder to browse your destination. To resume, choose the original backup folder containing Photos/Videos or the older year folders.").font(.caption).foregroundStyle(.secondary)
                     DisclosureGroup("New folder or manual path") {
                         TextField("Folder path inside share", text: $backup.folder).disabled(backup.busy).autocorrectionDisabled().textInputAutocapitalization(.never)
                         Text("New folders are created when backup starts. Leave blank to use the share root.").font(.caption).foregroundStyle(.secondary)
