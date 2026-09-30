@@ -19,6 +19,7 @@ final class UnraidClient: ServerAPI {
     private let key: String
     init(profile: ServerProfile, key: String) { self.profile = profile; self.key = key }
     func query<T: Decodable>(_ document: String, variables: [String: String] = [:]) async throws -> T {
+        _ = try AddressPolicy.validate(profile.address.absoluteString)
         var request = URLRequest(url: AddressPolicy.endpoint(profile.address))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -33,7 +34,16 @@ final class UnraidClient: ServerAPI {
         configuration.proxyConfigurations = try await TailnetStore.shared.prepare(for: profile.address.host)
         let session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch {
+            let e = error as NSError
+            if e.domain == NSURLErrorDomain && [-1200, -1201, -1202, -1203, -1204].contains(e.code) {
+                throw AppError.message(ConnectionRecovery.message(error))
+            }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { throw AppError.message("The server returned an invalid response.") }
         if (300...399).contains(http.statusCode) {
             throw AppError.message(Self.redirectMessage(response: http))

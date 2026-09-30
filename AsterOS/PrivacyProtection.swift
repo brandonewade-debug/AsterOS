@@ -42,10 +42,10 @@ enum PrivateTemporaryFiles {
 }
 
 
-// Native artwork never follows redirects or attaches API/server credentials.
+// Native artwork never follows redirects; session cookies are scoped to server artwork paths.
 enum AppIconPolicy {
     static func mayAuthenticate(_ url: URL, server: URL) -> Bool {
-        guard url.scheme == "https", url.user == nil, url.password == nil,
+        guard LocalHTTPPolicy.permits(url), url.user == nil, url.password == nil,
               CatalogPolicy.sameOrigin(url, server),
               ["png", "jpg", "jpeg", "webp", "gif"].contains(url.pathExtension.lowercased()) else { return false }
         return url.path.hasPrefix("/state/plugins/dynamix.docker.manager/images/") || url.path.hasPrefix("/plugins/")
@@ -54,7 +54,7 @@ enum AppIconPolicy {
         var result: [URL] = []
         let supplied = icon.flatMap { URL(string: $0, relativeTo: server)?.absoluteURL }
         func safe(_ url: URL) -> Bool {
-            url.scheme?.lowercased() == "https" && url.host != nil && url.user == nil && url.password == nil
+            LocalHTTPPolicy.permits(url) && url.host != nil && url.user == nil && url.password == nil
         }
         if let supplied, safe(supplied), let server, CatalogPolicy.sameOrigin(supplied, server) {
             result.append(supplied)
@@ -64,7 +64,7 @@ enum AppIconPolicy {
            let cached = URL(string: "/state/plugins/dynamix.docker.manager/images/", relativeTo: server)?.absoluteURL {
             result.append(cached.appendingPathComponent(name + "-icon.png"))
         }
-        if allowExternal, let supplied, safe(supplied), !result.contains(supplied) { result.append(supplied) }
+        if allowExternal, let supplied, supplied.scheme == "https", safe(supplied), !result.contains(supplied) { result.append(supplied) }
         return result
     }
 }

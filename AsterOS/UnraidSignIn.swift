@@ -32,13 +32,11 @@ struct UnraidAuthorization: Identifiable {
         return components.url!
     }
     func isCallback(_ url: URL) -> Bool {
-        url.scheme?.lowercased() == "https" && url.host?.lowercased() == callback.host?.lowercased()
-        && (url.port ?? 443) == (callback.port ?? 443) && url.path == callback.path
+        CatalogPolicy.sameOrigin(url, callback) && url.path == callback.path
         && url.user == nil && url.password == nil
     }
     func isPostLoginLanding(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "https", url.host?.lowercased() == server.host?.lowercased(),
-              (url.port ?? 443) == (server.port ?? 443), url.user == nil, url.password == nil else { return false }
+        guard CatalogPolicy.sameOrigin(url, server), url.user == nil, url.password == nil else { return false }
         let base = server.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let prefix = base.isEmpty ? "" : "/" + base
         return [prefix + "/Main", prefix + "/Dashboard"].contains(url.path)
@@ -101,8 +99,8 @@ struct UnraidAuthorization: Identifiable {
             } catch { self.error = error.localizedDescription; loading = false }
             return
         }
-        guard url.scheme?.lowercased() == "https" || url.absoluteString == "about:blank" else {
-            error = "Sign-in requires HTTPS. External identity providers may require the Safari option below."
+        guard LocalHTTPPolicy.permits(url) || url.absoluteString == "about:blank" else {
+            error = "Sign-in requires HTTPS or your explicitly approved local HTTP address. Return to connection setup to change it."
             decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
@@ -142,10 +140,10 @@ struct UnraidAuthorization: Identifiable {
         guard (error as NSError).code != NSURLErrorCancelled, !completed else { return }
         loading = false
         // Do not echo failing URLs: an authorization URL can contain a key.
-        self.error = "Could not load the secure sign-in page (code \((error as NSError).code)). Check the private connection, HTTPS port and certificate, then tap Continue to approval."
+        self.error = ConnectionRecovery.message(error)
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if action.targetFrame == nil, let url = action.request.url, url.scheme == "https" { webView.load(action.request) }
+        if action.targetFrame == nil, let url = action.request.url, LocalHTTPPolicy.permits(url) { webView.load(action.request) }
         return nil
     }
 }
@@ -173,7 +171,7 @@ struct UnraidSignInView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Label(model.host, systemImage: "lock.fill").font(.caption).padding(10)
+                Label(model.host, systemImage: model.request.server.scheme == "https" ? "lock.fill" : "network").font(.caption).padding(10)
                 if needsConnection {
                     VStack(spacing: 22) {
                         Spacer()
@@ -194,7 +192,18 @@ struct UnraidSignInView: View {
                     }.padding(28).frame(maxWidth: .infinity).background(DockTheme.background)
                 } else {
                     if model.loading { ProgressView().padding(8) }
-                    SignInSurface(model: model)
+                    if let error = model.error, !model.loading {
+                        ContentUnavailableView {
+                            Label("Connection needs attention", systemImage: "network.slash")
+                        } description: {
+                            Text(error)
+                        } actions: {
+                            Button("Retry") { model.continueToApproval() }
+                            Button("Edit server address") { dismiss() }
+                        }
+                    } else {
+                        SignInSurface(model: model)
+                    }
                     VStack(alignment: .leading, spacing: 10) {
                         if let error = model.error { Text(error).foregroundStyle(.orange) }
                         Text("Sign in on your server, then approve AsterOS. Your password stays in the server’s sign-in page.")

@@ -81,6 +81,7 @@ struct ConnectionView: View {
     @State private var authorization: UnraidAuthorization?
     @State private var connectionID = UUID()
     @State private var allowDockerManagement = true
+    @State private var localHTTPAllowed = false
     @State private var busy = false
     @State private var error: String?
     var body: some View {
@@ -91,7 +92,7 @@ struct ConnectionView: View {
                         Image("BrandMark").resizable().scaledToFit().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
                         Text("Your server. Within reach.").font(.title2.bold())
                     }
-                    Text("Connect privately through Tailscale, or use your own HTTPS server address.").foregroundStyle(.secondary)
+                    Text("Connect with HTTPS or Tailscale. For a local HTTP server, enter its full http:// private IP address and enable local HTTP below.").foregroundStyle(.secondary)
                 }
                 Section {
                     NavigationLink { TailnetSetupView() } label: { Label("Connect with Tailscale", systemImage: "network.badge.shield.half.filled") }
@@ -102,6 +103,17 @@ struct ConnectionView: View {
                     TextField("https://server.example.com", text: $address).disabled(renewing != nil).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("Connection") } footer: {
                     Text("Enter your server address, then sign in below. No API key needs to be copied.")
+                }
+                if let localURL = URL(string: address), LocalHTTPPolicy.eligible(localURL) {
+                    Section {
+                        Toggle("Allow HTTP on my local network", isOn: Binding(
+                            get: { localHTTPAllowed },
+                            set: { value in
+                                localHTTPAllowed = value
+                                LocalHTTPPolicy.setApproved(value, for: localURL)
+                            }))
+                        Text("HTTP does not encrypt your password, API key, or server data. Enable only on a network you trust. This choice applies only to this IP address and port, and is remembered on this device.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section {
                     Toggle("Manage Docker apps", isOn: $allowDockerManagement)
@@ -135,8 +147,10 @@ struct ConnectionView: View {
                         name = renewing.name; address = renewing.address.absoluteString
                         kind = renewing.connection; connectionID = renewing.id
                     }
+                    localHTTPAllowed = URL(string: address).map { LocalHTTPPolicy.approved($0) } ?? false
                     prepared = true
                 }
+                .onChange(of: address) { _, value in localHTTPAllowed = URL(string: value).map { LocalHTTPPolicy.approved($0) } ?? false }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
                 .interactiveDismissDisabled(busy)
                 .sheet(item: $authorization) { request in
